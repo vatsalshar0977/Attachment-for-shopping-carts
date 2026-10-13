@@ -5,7 +5,7 @@ Also reports exposure statistics, which is how the lighting gets judged in a
 headless container.
 
 Usage:
-    python3 scripts/ascii_view.py blender/exports/renders/01_hero.png [width]
+    python3 blender/scripts/ascii_view.py blender/exports/renders/01_deployed_hero.png [width]
 """
 
 import sys

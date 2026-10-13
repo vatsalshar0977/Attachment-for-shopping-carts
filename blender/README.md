@@ -1,67 +1,78 @@
-# Blender — shopping-cart leaning cushion
+# Blender — fold-out shopping-cart leaning support
 
-A concept attachment that clips over a supermarket cart's handle and adds a
-soft, broad contact surface for a shopper to lean against. The model was built
-from the uploaded `hcd mockup.blend`; I inspected the cart mesh and used its
-handle as the fit reference before replacing the blue block mock-up with a
-parametric two-part assembly.
+This revision replaces the original handle-only pad concept with a broad,
+padded **leaning support** based on the user's sketch. It swings down behind
+(and just below) the cart handle for use, then folds inward and lies inside the
+basket opening for storage. It is not a seat: it is designed as a back/leaning
+surface, and must not be used for sitting.
 
-## Design
+The attachment was built on the supplied `hcd mockup.blend`. The cart mesh was
+inspected and normalized as the fit reference; its handle measures about
+**23.3 mm diameter × 513 mm long**, at roughly **1.09 m** above the ground.
 
-| Component | Concept | Model dimensions |
+## Design and animation
+
+| Component | Concept | Approximate size |
 | --- | --- | --- |
-| `HCD_Pad` | Soft-touch, ribbed TPE cushion with a snap slot on the underside | 300 × 104 × 116 mm |
-| `HCD_Clip` | Rigid PP C-channel; wraps 260° around the tube and projects 10 mm past each pad end | 320 × 30 × 25 mm |
-| `HCD_Attachment` | Parent/assembly at the cart handle | On-cart position |
+| `HCD_Rest_Panel_Shell` | Rounded, stiff-looking backing plate | 460 × 270 × 26 mm |
+| `HCD_Rest_Cushion` | Continuous soft-touch contact face with subtle horizontal texture | 430 × 238 × 60 mm |
+| `HCD_Drop_Bracket_Left/Right` | Pair of handle clamps and drop links positioning the lower hinge axis over the basket rim | Cart-specific fit |
+| `HCD_Hinge_*` | Paired pivot ears, pins, and conceptual two-position release tabs | Cart-specific fit |
+| `HCD_Stay_*` | Two telescoping side stays that brace the deployed support and retract as it folds | About 117 mm deployed; 282 mm stowed |
 
-The source cart's handle measures about **23.3 mm diameter × 513 mm long** in
-the uploaded model. The design uses a 0.4 mm radial allowance at the handle
-and between the clip and cushion. The cart was scaled from the source's
-4×-oversized geometry and placed on a ground plane; its handle height is about
-1.09 m. `Reference_Mockup` is retained in a hidden collection in the blend file.
+The assembly is animated in the Blender timeline:
 
-The blue pad has subtle circumferential anti-slip ribs and rounded ends. The
-rigid clip's flared lips face down so the assembly can be pressed onto the bar
-from below. The pad is 300 mm long; the 320 mm clip leaves a small, visible
-retaining lip at either end.
+- **Frame 1 — deployed:** the broad cushion faces the shopper as a leaning rest.
+- **Frame 18 — mid-fold:** the panel and telescoping stays move inward.
+- **Frame 35 — stowed:** the panel lies horizontally within the top of the cart basket.
 
-> **Prototype only:** the geometry is a visual/fit concept, not a load-rated or
-> safety-certified part. It has not been stress-tested or validated for someone
-> leaning on it. Before use or production, verify the actual cart-handle size,
-> materials, clip retention, deflection, fatigue, hygiene/cleanability, and
-> edge safety with physical tests.
+The lower pivot is carried by drop brackets that clamp to the measured handle.
+The stays attach to the rear basket sides and telescope as the panel rotates.
+This models a plausible fold path for visualization; it does not validate a
+real hinge, lock, cart fit, or load path.
+
+> **Prototype only:** this is a visual/fit concept, not load-rated or
+> safety-certified. Do not sit on it, and do not rely on it for body support
+> before physical engineering and testing. Verify the actual cart geometry,
+> attachment retention, hinge/lock strength, telescoping stays, material
+> selection, clearances, hygiene/cleanability, and leaning loads. A qualified
+> engineer must establish a safe working load and test the physical prototype.
 
 ## Files
 
 | Path | Contents |
 | --- | --- |
-| `source/hcd mockup.blend` | Edited Blender scene: cart, HCD assembly, materials, hidden reference, and a hero camera/studio rig |
-| `exports/hcd_attachment_mm.stl` | Both parts together, millimetres |
-| `exports/hcd_pad_mm.stl` | Cushion only, millimetres |
-| `exports/hcd_clip_mm.stl` | Clip only, millimetres |
-| `exports/hcd_attachment.glb` | Coloured assembly for preview/viewers |
-| `exports/renders/` | Eight studio/cart views and contact sheet |
-| `scripts/build_attachment.py` | Parametric rebuild; edit dimensions in its `PARAMS` block |
-| `scripts/render_studio.py` | Cycles CPU product views |
-| `scripts/export.py` | Re-export STL / GLB files |
+| `source/hcd mockup.blend` | Source scene with cart, fold-out support, materials, animation, and inspection camera/lights |
+| `exports/hcd_foldable_lean_rest.glb` | Coloured, animated GLB preview of the attachment |
+| `exports/hcd_foldable_lean_rest_deployed_mm.stl` | Deployed assembly geometry in millimetres, origin at the lower hinge axis |
+| `exports/hcd_rest_panel_shell_mm.stl` | Backing plate only, millimetres |
+| `exports/hcd_rest_cushion_mm.stl` | Cushioned face only, millimetres |
+| `exports/hcd_fold_hardware_deployed_mm.stl` | Deployed hinge, clamp, bracket, and telescoping-stay geometry, millimetres |
+| `exports/renders/` | Deployed, mid-fold, and stowed render views plus contact sheet |
+| `scripts/build_attachment.py` | Rebuild the foldable support on the supplied cart |
+| `scripts/render_studio.py` | Render deployed and stowed Cycles CPU views |
+| `scripts/contact_sheet.py` | Tile the views for review |
+| `scripts/export.py` | Re-export animated GLB and static STLs |
 | `scripts/report_blend.py` | Object/material/dimension report |
-| `scripts/make_bpy_stubs.py` | X11/OpenGL link stubs for headless `bpy` |
+| `scripts/make_bpy_stubs.py` | Headless `bpy` runtime link-stub helper |
+
+The exported STL files are static geometry at frame 1; they do not contain the
+fold animation and are for fit/layout review only. The GLB carries the animated
+assembly but does not include the cart reference.
 
 ## Rebuilding
 
-This environment has no Blender GUI; Blender runs as Python's `bpy` module.
-After installing `bpy`, build the headless link stubs once, then run:
+From the repository root, with `bpy==5.0.1` installed, run:
 
 ```bash
-python3 scripts/make_bpy_stubs.py ~/tools/bpy-stubs
+python3 blender/scripts/make_bpy_stubs.py ~/tools/bpy-stubs
 export LD_LIBRARY_PATH=$HOME/tools/bpy-stubs
-python3 scripts/build_attachment.py
-python3 scripts/render_studio.py
-python3 scripts/contact_sheet.py
-python3 scripts/export.py
+python3 blender/scripts/build_attachment.py
+python3 blender/scripts/render_studio.py
+python3 blender/scripts/contact_sheet.py
+python3 blender/scripts/export.py
 ```
 
-The build is safe to re-run: it replaces only the generated HCD objects, keeps
-the cart and hidden reference, and saves the edited `.blend` in `source/`.
-Cycles CPU is used for render previews; EEVEE needs an EGL/OpenGL driver that
-is not available in this container.
+The build is safe to re-run: it replaces generated HCD objects while retaining
+the supplied cart reference and saves the updated `.blend`. Cycles CPU is used
+for render previews because this headless environment has no EGL/OpenGL driver.

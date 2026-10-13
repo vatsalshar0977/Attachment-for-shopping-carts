@@ -2,7 +2,7 @@
 """Dump a structured report of a .blend file: objects, sizes, materials, topology.
 
 Usage:
-    LD_LIBRARY_PATH=$HOME/tools/bpy-stubs python3 scripts/inspect.py [file.blend]
+    LD_LIBRARY_PATH=$HOME/tools/bpy-stubs python3 blender/scripts/report_blend.py 'blender/source/hcd mockup.blend'
 """
 
 import sys
