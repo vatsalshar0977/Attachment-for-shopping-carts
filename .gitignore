@@ -1,0 +1,7 @@
+# Blender autosave/backup files
+*.blend1
+*.blend2
+
+# Python cache files
+__pycache__/
+*.py[cod]

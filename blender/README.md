@@ -1,44 +1,67 @@
-# blender/
+# Blender — shopping-cart leaning cushion
 
-Home for the Blender work in this repo: the shopping-cart handle attachment
-(a cushioned pad that clips onto the handle so users can lean on it
-comfortably).
+A concept attachment that clips over a supermarket cart's handle and adds a
+soft, broad contact surface for a shopper to lean against. The model was built
+from the uploaded `hcd mockup.blend`; I inspected the cart mesh and used its
+handle as the fit reference before replacing the blue block mock-up with a
+parametric two-part assembly.
 
-## Layout
+## Design
 
-| Path              | What goes here                                              |
-| ----------------- | ----------------------------------------------------------- |
-| `source/`         | The `.blend` file(s). This is what gets edited.             |
-| `scripts/`        | Python (`bpy`) scripts used to make the edits reproducibly. |
-| `exports/`        | Exported geometry (glTF / OBJ / STL) for use elsewhere.     |
+| Component | Concept | Model dimensions |
+| --- | --- | --- |
+| `HCD_Pad` | Soft-touch, ribbed TPE cushion with a snap slot on the underside | 300 × 104 × 116 mm |
+| `HCD_Clip` | Rigid PP C-channel; wraps 260° around the tube and projects 10 mm past each pad end | 320 × 30 × 25 mm |
+| `HCD_Attachment` | Parent/assembly at the cart handle | On-cart position |
 
-Every change to `source/*.blend` has a matching script in `scripts/`, so any
-edit can be re-run or reverted by editing numbers in one place.
+The source cart's handle measures about **23.3 mm diameter × 513 mm long** in
+the uploaded model. The design uses a 0.4 mm radial allowance at the handle
+and between the clip and cushion. The cart was scaled from the source's
+4×-oversized geometry and placed on a ground plane; its handle height is about
+1.09 m. `Reference_Mockup` is retained in a hidden collection in the blend file.
 
-## Running Blender here
+The blue pad has subtle circumferential anti-slip ribs and rounded ends. The
+rigid clip's flared lips face down so the assembly can be pressed onto the bar
+from below. The pad is 300 mm long; the 320 mm clip leaves a small, visible
+retaining lip at either end.
 
-There is no GUI in this environment, so Blender runs as a Python module
-(`bpy`) in background mode.
+> **Prototype only:** the geometry is a visual/fit concept, not a load-rated or
+> safety-certified part. It has not been stress-tested or validated for someone
+> leaning on it. Before use or production, verify the actual cart-handle size,
+> materials, clip retention, deflection, fatigue, hygiene/cleanability, and
+> edge safety with physical tests.
+
+## Files
+
+| Path | Contents |
+| --- | --- |
+| `source/hcd mockup.blend` | Edited Blender scene: cart, HCD assembly, materials, hidden reference, and a hero camera/studio rig |
+| `exports/hcd_attachment_mm.stl` | Both parts together, millimetres |
+| `exports/hcd_pad_mm.stl` | Cushion only, millimetres |
+| `exports/hcd_clip_mm.stl` | Clip only, millimetres |
+| `exports/hcd_attachment.glb` | Coloured assembly for preview/viewers |
+| `exports/renders/` | Eight studio/cart views and contact sheet |
+| `scripts/build_attachment.py` | Parametric rebuild; edit dimensions in its `PARAMS` block |
+| `scripts/render_studio.py` | Cycles CPU product views |
+| `scripts/export.py` | Re-export STL / GLB files |
+| `scripts/report_blend.py` | Object/material/dimension report |
+| `scripts/make_bpy_stubs.py` | X11/OpenGL link stubs for headless `bpy` |
+
+## Rebuilding
+
+This environment has no Blender GUI; Blender runs as Python's `bpy` module.
+After installing `bpy`, build the headless link stubs once, then run:
 
 ```bash
-pip install bpy                                  # Blender as a Python module
 python3 scripts/make_bpy_stubs.py ~/tools/bpy-stubs
-LD_LIBRARY_PATH=$HOME/tools/bpy-stubs python3 scripts/<your_script>.py
+export LD_LIBRARY_PATH=$HOME/tools/bpy-stubs
+python3 scripts/build_attachment.py
+python3 scripts/render_studio.py
+python3 scripts/contact_sheet.py
+python3 scripts/export.py
 ```
 
-`make_bpy_stubs.py` builds the handful of X11/OpenGL stub libraries that
-Blender's binaries link against but never call in background mode — without
-them `import bpy` fails on a machine with no X server. See the docstring in
-that script for the details.
-
-### Rendering
-
-Cycles works with the CPU device and is used for all preview renders:
-
-```python
-scene.render.engine = 'CYCLES'
-scene.cycles.device = 'CPU'
-```
-
-EEVEE and Workbench are unavailable here: they need a real OpenGL/EGL driver
-(`libEGL.so.1`), which this box does not have.
+The build is safe to re-run: it replaces only the generated HCD objects, keeps
+the cart and hidden reference, and saves the edited `.blend` in `source/`.
+Cycles CPU is used for render previews; EEVEE needs an EGL/OpenGL driver that
+is not available in this container.
