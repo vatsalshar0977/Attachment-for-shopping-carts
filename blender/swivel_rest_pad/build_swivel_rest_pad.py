@@ -46,11 +46,12 @@ BRANCH_LENGTH_MM = 55.0
 BRANCH_WALL_MM = 3.0
 COLLAR_DIAMETER_MM = 27.0
 COLLAR_LENGTH_MM = 10.0
-PAD_LENGTH_MM = 150.0              # pad long axis: Y
-PAD_WIDTH_MM = 90.0                # across handlebar: X
-PAD_THICKNESS_MM = 28.0
-PAD_SADDLE_DEPTH_MM = 3.2
+PAD_LENGTH_MM = 280.0              # cushion length, parallel to the cart handlebar
+PAD_WIDTH_MM = 160.0               # fore-aft depth of the leaning support
+PAD_THICKNESS_MM = 35.0
+PAD_CROWN_HEIGHT_MM = 4.0
 BASE_PLATE_THICKNESS_MM = 3.0
+BASE_PLATE_CENTER_Z_MM = -(PAD_THICKNESS_MM * 0.5 + BASE_PLATE_THICKNESS_MM * 0.5)
 PART_B_DIAMETER_MM = 18.0
 PART_B_LENGTH_MM = 100.0
 PART_B_WALL_MM = 2.5
@@ -73,26 +74,25 @@ TIMING = {
 }
 FRAME_START = 1
 FRAME_END = 312
+STARTUP_FRAME = 24  # full cart-and-person comparison when the file opens
 
-# Mount at the cart's existing push handle. The C-clamp and handlebar axes are
-# rotated into the cart's local Y direction; Part A descends from the handle,
-# leaving the cushioned rest-pad below it. The uploaded cart reference is copied
-# into this scene as context; its source file is never modified.
-CART_HANDLEBAR_CENTER_MM = (-490.0, 0.0, 1090.0)
-CART_HANDLEBAR_AXIS = Vector((0.0, 1.0, 0.0))
+# The cart mesh is copied and measured at build time. The center of its actual
+# handlebar island drives the mount location; the source project stays untouched.
 CART_CONTEXT_SCALE = 1000.0
-CART_SWAY_MM = 72.0
-CART_SWAY_YAW_DEG = 3.0
 CLAMP_CENTER_Z = CLAMP_OUTER_DIAMETER_MM / 2.0
 BRANCH_DIRECTION = -1.0
 BRANCH_TIP_Z = BRANCH_DIRECTION * (CLAMP_CENTER_Z + BRANCH_LENGTH_MM)
 PAD_MOUNT_OFFSET_Y = 0.0
 PAD_CENTER_Y = -PAD_MOUNT_OFFSET_Y
-TILT_AXIS_OFFSET_Y_MM = 35.0  # Part B hinge offset along the pad long axis
+TILT_AXIS_OFFSET_Y_MM = 0.0  # central bearing beneath the cushion's midpoint
 AXLE_PLATE_OFFSET_Y_MM = TILT_AXIS_OFFSET_Y_MM - PAD_CENTER_Y
 PLATE_AXIS_Z = BRANCH_DIRECTION * 16.0
 TILT_AXIS_Z = -8.0
 PAD_CENTER_FROM_TILT_Z = 8.0
+PAD_STEM_BOTTOM_Z_MM = PART_B_DIAMETER_MM * 0.5 + 5.0
+PAD_STEM_TOP_Z_MM = -(PLATE_AXIS_Z + TILT_AXIS_Z) + COLLAR_LENGTH_MM
+PAD_STEM_LENGTH_MM = PAD_STEM_TOP_Z_MM - PAD_STEM_BOTTOM_Z_MM
+PAD_STEM_CENTER_Z_MM = (PAD_STEM_TOP_Z_MM + PAD_STEM_BOTTOM_Z_MM) * 0.5
 
 PROJECT_DIR = Path(__file__).resolve().parent
 CART_REFERENCE_BLEND = PROJECT_DIR.parent / "source" / "hcd mockup.blend"
@@ -535,7 +535,10 @@ def make_materials() -> dict[str, bpy.types.Material]:
     terra = LINEAR_PALETTE["TERRACOTTA"]
     warm_aluminum = mix_rgba(sage, cream, 0.78)
     pale_sage = mix_rgba(cream, sage, 0.25)
-    cart_tint = mix_rgba(cream, sage, 0.14)
+    cart_tint = mix_rgba(cream, sage, 0.38)
+    human_clothing = mix_rgba(body, sage, 0.46)
+    human_pants = mix_rgba(body, sage, 0.27)
+    human_skin = mix_rgba(cream, terra, 0.32)
     dark_body = scale_rgba(body, 0.90)
 
     mats = {
@@ -549,6 +552,9 @@ def make_materials() -> dict[str, bpy.types.Material]:
         "Label": principled_material("Forest labels", body, 0.64, 0.0),
         "Backdrop": principled_material("Cream plaster backdrop", cream, 0.92, 0.0),
         "CartContext": principled_material("Cart context · pale palette sage", cart_tint, 0.72, 0.0),
+        "HumanClothing": principled_material("Scale figure · palette forest clothing", human_clothing, 0.82, 0.0),
+        "HumanPants": principled_material("Scale figure · darker forest trousers", human_pants, 0.82, 0.0),
+        "HumanSkin": principled_material("Scale figure · warm palette skin tint", human_skin, 0.78, 0.0),
     }
     # Fine procedural grain stays subtle and all tints remain palette-derived.
     add_noise_bump(mats["Pad"], 185.0, 0.07, 0.11)
@@ -601,8 +607,69 @@ def make_materials() -> dict[str, bpy.types.Material]:
     return MATERIALS
 
 
-def make_cart_context() -> dict[str, bpy.types.Object]:
-    """Append a palette-tinted copy of the uploaded cart as animated context."""
+def detect_cart_handlebar(cart: bpy.types.Object) -> dict[str, object]:
+    """Measure the long, round handlebar island in the copied cart mesh."""
+    bpy.context.view_layer.update()
+    mesh = cart.data
+    adjacency = [set() for _ in mesh.vertices]
+    for edge in mesh.edges:
+        a, b = edge.vertices
+        adjacency[a].add(b)
+        adjacency[b].add(a)
+
+    matrix = cart.matrix_world.copy()
+    seen: set[int] = set()
+    candidates = []
+    for start in range(len(mesh.vertices)):
+        if start in seen:
+            continue
+        stack = [start]
+        seen.add(start)
+        component = []
+        while stack:
+            index = stack.pop()
+            component.append(index)
+            for neighbor in adjacency[index]:
+                if neighbor not in seen:
+                    seen.add(neighbor)
+                    stack.append(neighbor)
+        points = [matrix @ mesh.vertices[index].co for index in component]
+        if len(points) < 8:
+            continue
+        minimum = Vector(tuple(min(point[axis] for point in points) for axis in range(3)))
+        maximum = Vector(tuple(max(point[axis] for point in points) for axis in range(3)))
+        dimensions = maximum - minimum
+        long_axis_index = max(range(3), key=lambda axis: dimensions[axis])
+        cross_axes = [axis for axis in range(3) if axis != long_axis_index]
+        long_length = dimensions[long_axis_index]
+        cross_dims = [dimensions[axis] for axis in cross_axes]
+        center = (minimum + maximum) * 0.5
+        # Exclude basket rails, wheels, and the basket mesh: this component is
+        # the approximately 0.49 m round tube at the cart's push-handle height.
+        if (long_axis_index == 1 and 400.0 <= long_length <= 550.0
+                and max(cross_dims) < 45.0 and min(cross_dims) > 12.0
+                and center.z > 850.0):
+            candidates.append((abs(long_length - 480.0), center, dimensions,
+                               long_axis_index))
+    if not candidates:
+        raise RuntimeError("Could not identify the actual push handlebar in the copied cart mesh")
+    _, center, dimensions, long_axis_index = min(candidates, key=lambda item: item[0])
+    local_axis = Vector((0.0, 1.0, 0.0))
+    axis = (matrix.to_3x3() @ local_axis).normalized()
+    if axis.y < 0.0:
+        axis.negate()
+    cross_axes = [axis_index for axis_index in range(3) if axis_index != long_axis_index]
+    diameter = (dimensions[cross_axes[0]] + dimensions[cross_axes[1]]) * 0.5
+    return {
+        "center": tuple(center),
+        "axis": tuple(axis),
+        "diameter": float(diameter),
+        "length": float(dimensions[long_axis_index]),
+    }
+
+
+def make_cart_context() -> dict[str, object]:
+    """Append and measure a palette-tinted cart copy; never edit the source."""
     if not CART_REFERENCE_BLEND.is_file():
         raise FileNotFoundError(f"Cart reference not found: {CART_REFERENCE_BLEND}")
     cart_root = make_empty("Cart_Context_Root", "Cart_Context", (0.0, 0.0, 0.0),
@@ -620,18 +687,159 @@ def make_cart_context() -> dict[str, bpy.types.Object]:
     parent_local(cart, cart_root)
     cart.location = tuple(value * CART_CONTEXT_SCALE for value in cart.location)
     cart.scale = tuple(value * CART_CONTEXT_SCALE for value in cart.scale)
-    if cart.type == "MESH":
-        cart.data.materials.clear()
-        cart.data.materials.append(MATERIALS["CartContext"])
+    if cart.type != "MESH":
+        raise TypeError("Shopping Cart context must be a mesh to measure its handlebar")
+    cart.data.materials.clear()
+    cart.data.materials.append(MATERIALS["CartContext"])
+    handle = detect_cart_handlebar(cart)
     for material in list(bpy.data.materials):
         if material.name not in existing_material_names and material.users == 0:
             bpy.data.materials.remove(material)
     cart["Context source"] = "Copied from blender/source/hcd mockup.blend; source file unchanged"
-    cart["Reference dimensions mm"] = "1030 × 530 × 1112"
-    cart["Cart handle center mm"] = CART_HANDLEBAR_CENTER_MM
-    cart_root["Motion"] = "Smooth lateral sway and small steering yaw during the animation"
+    cart["Reference dimensions mm"] = "1030 × 530 × 1112 (approximate source bounds)"
+    cart["Measured handle center mm"] = handle["center"]
+    cart["Measured handle axis"] = handle["axis"]
+    cart["Measured handle Ø × length mm"] = (
+        round(handle["diameter"], 2), round(handle["length"], 2))
+    cart_root["Handlebar axis"] = handle["axis"]
+    cart_root["Handlebar center mm"] = handle["center"]
+    cart_root["Motion"] = "Stationary cart reference; only the attachment pivots"
     cart_root["Context only"] = True
-    return {"root": cart_root, "cart": cart}
+    return {"root": cart_root, "cart": cart, "handle": handle}
+
+
+def add_human_limb(name: str, start, end, radius: float,
+                   material: bpy.types.Material, root: bpy.types.Object) -> bpy.types.Object:
+    """Create one rounded scale-figure limb segment in millimeter coordinates."""
+    a, b = Vector(start), Vector(end)
+    direction = b - a
+    segment = cylinder(name, radius, direction.length, (a + b) * 0.5,
+                       material, "Human_Context", axis=direction,
+                       bevel=min(8.0, radius * 0.22), vertices=32)
+    parent_local(segment, root)
+    return segment
+
+
+def add_human_joint(name: str, location, radius: float,
+                    material: bpy.types.Material, root: bpy.types.Object,
+                    scale=(1.0, 1.0, 1.0)) -> bpy.types.Object:
+    joint = sphere(name, radius, location, material, "Human_Context", scale=scale)
+    parent_local(joint, root)
+    return joint
+
+
+def make_human_torso(root: bpy.types.Object, handle_center, material) -> bpy.types.Object:
+    """Make a continuous, gently forward-leaning torso and hip silhouette."""
+    hx, hy, _ = Vector(handle_center)
+    # (height from floor, center-x offset from handle, fore-aft radius, half-width)
+    sections = (
+        (650.0, -270.0, 82.0, 105.0),
+        (710.0, -260.0, 112.0, 132.0),
+        (790.0, -255.0, 140.0, 160.0),
+        (875.0, -250.0, 158.0, 180.0),
+        (960.0, -242.0, 162.0, 192.0),
+        (1050.0, -236.0, 156.0, 202.0),
+        (1150.0, -232.0, 152.0, 207.0),
+        (1240.0, -230.0, 145.0, 197.0),
+        (1320.0, -220.0, 132.0, 177.0),
+        (1385.0, -205.0, 88.0, 125.0),
+    )
+    segments = 48
+    vertices = []
+    faces = []
+    for height, x_offset, radius_x, radius_y in sections:
+        center_x = hx + x_offset
+        for index in range(segments):
+            angle = math.tau * index / segments
+            vertices.append((center_x + radius_x * math.cos(angle),
+                             hy + radius_y * math.sin(angle), height))
+    faces.append(tuple(reversed(range(segments))))
+    for ring in range(len(sections) - 1):
+        lower = ring * segments
+        upper = (ring + 1) * segments
+        for index in range(segments):
+            following = (index + 1) % segments
+            faces.append((lower + index, lower + following,
+                          upper + following, upper + index))
+    top = (len(sections) - 1) * segments
+    faces.append(tuple(top + index for index in range(segments)))
+    torso = mesh_object("ScaleFigure_Torso_Continuous", vertices, faces,
+                        "Human_Context", material)
+    set_smooth(torso)
+    torso["Pose note"] = "Continuous scale silhouette with a slight forward lean"
+    parent_local(torso, root)
+    return torso
+
+
+def make_human_scale_figure(cart_root: bpy.types.Object,
+                             handle_center_mm) -> bpy.types.Object:
+    """Add a stylized 1700 mm standing adult for visual proportion context."""
+    handle = Vector(handle_center_mm)
+    hx, hy, hz = handle
+    root = make_empty("Human_Scale_Figure_1700mm", "Human_Context",
+                      (0.0, 0.0, 0.0), "PLAIN_AXES", 35.0)
+    parent_local(root, cart_root)
+    root["Reference height mm"] = 1700.0
+    root["Pose"] = "Standing behind the cart, lightly leaning toward the support, hands near the handle"
+    root["Not validated"] = "Stylized visual scale only; not ergonomic, fit, or safety validation"
+    clothing = MATERIALS["HumanClothing"]
+    pants = MATERIALS["HumanPants"]
+    skin = MATERIALS["HumanSkin"]
+
+    # The torso is a single smooth mesh; its front edge meets the cushion at
+    # waist/chest height without turning the pad into a seat.
+    make_human_torso(root, handle, clothing)
+    head_center = (hx - 190.0, hy, hz + 478.0)
+    head = sphere("ScaleFigure_Head", 1.0, head_center, skin,
+                  "Human_Context", scale=(74.0, 82.0, 130.0))
+    parent_local(head, root)
+    neck = cylinder("ScaleFigure_Neck", 40.0, 130.0,
+                    (hx - 190.0, hy, hz + 350.0), skin, "Human_Context",
+                    axis=Vector((0.0, 0.0, 1.0)), bevel=14.0, vertices=32)
+    parent_local(neck, root)
+    nose = sphere("ScaleFigure_Nose", 1.0,
+                  (hx - 99.0, hy, hz + 478.0), skin,
+                  "Human_Context", scale=(18.0, 15.0, 12.0))
+    parent_local(nose, root)
+    hair = sphere("ScaleFigure_Hair_Cap", 1.0,
+                  (hx - 190.0, hy, hz + 558.0), pants,
+                  "Human_Context", scale=(70.0, 80.0, 42.0))
+    parent_local(hair, root)
+
+    # Arms reach forward to the actual cart handle at symmetric grip positions.
+    for side in (-1.0, 1.0):
+        shoulder = (hx - 151.0, hy + side * 165.0, hz + 233.0)
+        elbow = (hx - 46.0, hy + side * 225.0, hz + 118.0)
+        wrist = (hx - 6.0, hy + side * 180.0, hz + 23.0)
+        hand = (hx + 4.0, hy + side * 166.0, hz - 2.0)
+        suffix = "L" if side < 0 else "R"
+        add_human_limb(f"ScaleFigure_UpperArm_{suffix}",
+                       shoulder, elbow, 39.0, clothing, root)
+        add_human_limb(f"ScaleFigure_Forearm_{suffix}",
+                       elbow, wrist, 32.0, clothing, root)
+        add_human_joint(f"ScaleFigure_Elbow_{suffix}", elbow, 32.0,
+                        clothing, root)
+        add_human_joint(f"ScaleFigure_Hand_{suffix}", hand, 1.0,
+                        skin, root, scale=(32.0, 38.0, 22.0))
+
+    # Two legs and forward-facing shoes give a floor-to-head scale silhouette.
+    for side in (-1.0, 1.0):
+        suffix = "L" if side < 0 else "R"
+        hip = (hx - 261.0, hy + side * 105.0, 840.0)
+        knee = (hx - 276.0, hy + side * 112.0, 450.0)
+        ankle = (hx - 251.0, hy + side * 118.0, 88.0)
+        add_human_limb(f"ScaleFigure_Thigh_{suffix}",
+                       hip, knee, 55.0, pants, root)
+        add_human_limb(f"ScaleFigure_Shin_{suffix}",
+                       knee, ankle, 43.0, pants, root)
+        add_human_joint(f"ScaleFigure_Knee_{suffix}", knee, 46.0,
+                        pants, root)
+        foot = bevelled_box(f"ScaleFigure_Shoe_{suffix}",
+                            (220.0, 92.0, 68.0),
+                            (hx - 156.0, hy + side * 118.0, 36.0),
+                            pants, "Human_Context", bevel=14.0)
+        parent_local(foot, root)
+    return root
 
 
 # ── Main C-profile clamp and Part A T-connector ───────────────────────────────
@@ -771,13 +979,14 @@ def make_clamp() -> dict[str, bpy.types.Object]:
 
 
 def make_handlebar() -> bpy.types.Object:
-    """Create the 400 mm, 25 mm-diameter animation prop."""
-    bar = add_tube_mesh("Handlebar_Ø25mm", HANDLEBAR_DIAMETER_MM * 0.5,
+    """Create the specified Ø25 × 400 mm overlay aligned to the cart handle."""
+    bar = add_tube_mesh("Handlebar_Prop_Ø25x400", HANDLEBAR_DIAMETER_MM * 0.5,
                         HANDLEBAR_DIAMETER_MM * 0.5 - 2.4,
                         HANDLEBAR_LENGTH_MM, (0.0, 0.0, 0.0),
-                        "Handlebar", MATERIALS["Aluminum"],
+                        "Handlebar", MATERIALS["CartContext"],
                         axis=Vector((1.0, 0.0, 0.0)), bevel=0.35)
-    bar["Assumption"] = "Nominal Ø25 mm handlebar; confirm actual cart tube before fit"
+    bar["Specified size mm"] = "Ø25 × 400"
+    bar["Context alignment"] = "Centered on the measured source-cart handle; visual overlay only"
     return remember(bar, "Handlebar")
 
 
@@ -803,15 +1012,15 @@ def make_axle() -> dict[str, bpy.types.Object]:
     # Sage-to-terracotta strip sits behind the slot as a cutaway indicator.
     strip = bevelled_box("PartB_Gradient_Side_Strip",
                          (0.55, 4.2, 27.0),
-                         (outer - 0.85, 0.0, -18.0),
+                         (outer - 0.85, 0.0, slot_center_z),
                          MATERIALS["GradientAxle"], "PartB_Axle", bevel=0.18)
     parent_local(strip, axle)
-    strip.location = (outer - 0.85, 0.0, -18.0)
+    strip.location = (outer - 0.85, 0.0, slot_center_z)
     remember(strip)
     return {"axle": axle, "gradient_strip": strip}
 
 
-# ── Pad, saddle surface, removable plate, and logo/details ────────────────────
+# ── Cushioned leaning support, removable plate, and logo/details ──────────────
 def superellipse_point(theta: float, a: float, b: float, exponent: float = 3.8):
     c, s = math.cos(theta), math.sin(theta)
     p = 2.0 / exponent
@@ -820,7 +1029,7 @@ def superellipse_point(theta: float, a: float, b: float, exponent: float = 3.8):
     return x, y
 
 
-def make_saddle_mesh() -> bpy.types.Object:
+def make_cushion_mesh() -> bpy.types.Object:
     length = PAD_LENGTH_MM
     width = PAD_WIDTH_MM
     thickness = PAD_THICKNESS_MM
@@ -833,15 +1042,15 @@ def make_saddle_mesh() -> bpy.types.Object:
     bottom_start = 0
     ring_ids_top = []
     ring_ids_bottom = []
-    # Top center, then radial rings; central depression makes a gentle saddle.
-    vertices.append((0.0, 0.0, thickness * 0.5 - PAD_SADDLE_DEPTH_MM))
+    # The cushion has a slight convex crown, not a seat-like central depression.
+    vertices.append((0.0, 0.0, thickness * 0.5))
     for j in range(1, radial + 1):
         r = j / radial
         ring = []
         for i in range(angular):
             theta = math.tau * i / angular
-            x, y = superellipse_point(theta, a, b)
-            z = thickness * 0.5 - PAD_SADDLE_DEPTH_MM * (1.0 - r * r)
+            x, y = superellipse_point(theta, a, b, exponent=4.8)
+            z = thickness * 0.5 - PAD_CROWN_HEIGHT_MM * r * r
             ring.append(len(vertices))
             vertices.append((x * r, y * r, z))
         ring_ids_top.append(ring)
@@ -886,82 +1095,99 @@ def make_saddle_mesh() -> bpy.types.Object:
         j = (i + 1) % angular
         faces.append((top_edge[i], bottom_edge[i], bottom_edge[j], top_edge[j]))
 
-    obj = mesh_object("Pad_Body_Concave_Saddle", vertices, faces,
+    obj = mesh_object("Pad_Body_Crowned_Cushion", vertices, faces,
                       "Pad_Body", MATERIALS["Pad"])
     set_smooth(obj)
     obj["Nominal size mm"] = f"{length:.0f} × {width:.0f} × {thickness:.0f}"
-    obj["Saddle depression mm"] = PAD_SADDLE_DEPTH_MM
-    obj["Surface"] = "Parametric rounded pillow with shallow concave saddle"
+    obj["Crown height mm"] = PAD_CROWN_HEIGHT_MM
+    obj["Surface"] = "Parametric rounded-corner cushion with a softly convex crown; leaning support, not a seat"
     return remember(obj, "PadBody")
 
 
 def make_pad() -> dict[str, bpy.types.Object]:
-    """Create the rounded saddle, clearanced gimbal bores, receiver, and badges."""
-    body = make_saddle_mesh()
-    # Clearance bores keep the stem receiver and rear pivot barrel from
-    # intersecting the soft-touch shell. They meet only at their designed mounts.
-    bpy.ops.mesh.primitive_cylinder_add(vertices=96, radius=18.0, depth=12.0,
-                                        location=(0.0, PAD_MOUNT_OFFSET_Y, -8.0))
+    """Create the crowned leaning cushion, central socket, pivot, and details."""
+    body = make_cushion_mesh()
+    # A central socket clears the short stem that nests into Part A's collar;
+    # the cross-bore below aligns exactly with the Part B pitch axle.
+    stem_socket_start_z = PAD_STEM_BOTTOM_Z_MM - PAD_CENTER_FROM_TILT_Z
+    stem_socket_end_z = PAD_THICKNESS_MM * 0.5
+    stem_body_center_z = (stem_socket_start_z + stem_socket_end_z) * 0.5
+    stem_body_depth = stem_socket_end_z - stem_socket_start_z + 2.0
+    bpy.ops.mesh.primitive_cylinder_add(vertices=96, radius=12.25,
+                                        depth=stem_body_depth,
+                                        location=(0.0, PAD_MOUNT_OFFSET_Y,
+                                                  stem_body_center_z),
+                                        rotation=(0.0, 0.0, 0.0))
     stem_cutter = bpy.context.object
-    stem_cutter.name = "TEMP_Pad_Stem_Receiver_Bore"
-    boolean_difference(body, stem_cutter, "Stem receiver clearance bore")
+    stem_cutter.name = "TEMP_Pad_Central_Stem_Socket"
+    boolean_difference(body, stem_cutter, "Central stem socket through cushion top")
     axle_body_y = TILT_AXIS_OFFSET_Y_MM - PAD_CENTER_Y
     bpy.ops.mesh.primitive_cylinder_add(vertices=96, radius=13.5,
                                         depth=PAD_WIDTH_MM + 12.0,
-                                        location=(0.0, axle_body_y, -8.0),
-                                        rotation=(0.0, math.pi / 2.0, 0.0))
+                                        location=(0.0, axle_body_y,
+                                                  -PAD_CENTER_FROM_TILT_Z),
+                                        rotation=(math.pi / 2.0, 0.0, 0.0))
     axle_cutter = bpy.context.object
     axle_cutter.name = "TEMP_Pad_PartB_Barrel_Bore"
     boolean_difference(body, axle_cutter, "Part B rear barrel clearance tunnel")
     bpy.ops.mesh.primitive_cube_add(size=1.0,
-                                    location=(-28.0, axle_body_y, -7.0))
+                                    location=(0.0, axle_body_y + 32.0,
+                                              -9.0 - PAD_CENTER_FROM_TILT_Z))
     latch_cavity = bpy.context.object
     latch_cavity.name = "TEMP_Pad_Latch_Cavity"
     latch_cavity.dimensions = (32.0, 24.0, 14.0)
     apply_scale(latch_cavity)
     boolean_difference(body, latch_cavity, "Underside latch service pocket")
     body["Clearance"] = "Stem receiver bore, rear-pivot tunnel, and latch service pocket are modeled"
-    subdivision = body.modifiers.new("Soft saddle surface", "SUBSURF")
+    subdivision = body.modifiers.new("Soft crowned cushion surface", "SUBSURF")
     subdivision.subdivision_type = "CATMULL_CLARK"
     subdivision.levels = 1
     subdivision.render_levels = 2
     add_bevel(body, 0.35, 2, "Soft perimeter edge")
 
-    receiver = add_tube_mesh("Pad_Stem_Receiver_Barrel", 17.0, COLLAR_DIAMETER_MM * 0.5 + 0.65,
-                             22.0, (0.0, -TILT_AXIS_OFFSET_Y_MM, -7.0), "Pad_Body",
-                             MATERIALS["Aluminum"], axis=Vector((0.0, 0.0, 1.0)),
-                             bevel=0.5)
-    receiver["Clearance note"] = "Concept clearance only; verify collar interface"
-    receiver_liner = add_tube_mesh("Pad_Receiver_Gradient_Liner", 14.1, 13.8,
-                                   20.0, (0.0, -TILT_AXIS_OFFSET_Y_MM, -7.0), "Pad_Body",
-                                   MATERIALS["GradientClamp"], axis=Vector((0.0, 0.0, 1.0)),
+    receiver = add_tube_mesh("Pad_Stem_Receiver_Barrel", BRANCH_DIAMETER_MM * 0.5,
+                             BRANCH_DIAMETER_MM * 0.5 - BRANCH_WALL_MM,
+                             PAD_STEM_LENGTH_MM,
+                             (0.0, -TILT_AXIS_OFFSET_Y_MM, PAD_STEM_CENTER_Z_MM),
+                             "Pad_Body", MATERIALS["Aluminum"],
+                             axis=Vector((0.0, 0.0, 1.0)), bevel=0.5)
+    receiver["Interface"] = "Ø22 stem nests inside the measured Part A collar; visual clearance only"
+    receiver_liner = add_tube_mesh("Pad_Receiver_Gradient_Liner", 7.8, 7.5,
+                                   max(1.0, PAD_STEM_LENGTH_MM - 2.0),
+                                   (0.0, -TILT_AXIS_OFFSET_Y_MM, PAD_STEM_CENTER_Z_MM),
+                                   "Pad_Body", MATERIALS["GradientClamp"],
+                                   axis=Vector((0.0, 0.0, 1.0)),
                                    bevel=0.0, segments=64)
     rear_barrel = add_tube_mesh("Pad_Rear_Pivot_Barrel", 13.0, 10.3,
                                 PART_B_LENGTH_MM, (0.0, axle_body_y, -8.0),
                                 "Pad_Body", MATERIALS["Aluminum"],
-                                axis=Vector((1.0, 0.0, 0.0)), bevel=0.5)
+                                axis=Vector((0.0, -1.0, 0.0)), bevel=0.5)
     rear_barrel["Part"] = "Lower housing barrel for Part B axle"
 
-    # Small restrained logo plaque on the top at the far end of the cushion.
-    logo_y = PAD_LENGTH_MM * 0.46
-    badge = bevelled_box("Pad_Embossed_Logo_Plate", (34.0, 13.0, 1.0),
-                         (0.0, logo_y, PAD_THICKNESS_MM * 0.5),
+    # Small logo plaque sits on the crowned top, clear of the central stem.
+    logo_x = -PAD_LENGTH_MM * 0.34
+    logo_surface_z = (PAD_CENTER_FROM_TILT_Z + PAD_THICKNESS_MM * 0.5
+                      - PAD_CROWN_HEIGHT_MM * (logo_x / (PAD_LENGTH_MM * 0.5)) ** 2)
+    badge = bevelled_box("Pad_Embossed_Logo_Plate", (48.0, 18.0, 1.0),
+                         (logo_x, 0.0, logo_surface_z + 0.5),
                          MATERIALS["Aluminum"], "Pad_Body", bevel=0.48)
-    logo = add_text("Pad_Logo_RP", "RP", 7.2,
-                    (0.0, logo_y, PAD_THICKNESS_MM * 0.5 + 0.56),
+    logo = add_text("Pad_Logo_RP", "RP", 9.0,
+                    (logo_x, 0.0, logo_surface_z + 1.06),
                     MATERIALS["Label"], "Pad_Body", align_x="CENTER")
     logo.data.extrude = 0.15
     logo.data.bevel_depth = 0.08
 
-    # Side strip and neutral product wording; no brand is implied.
-    side_badge = bevelled_box("Pad_Side_Text_Strip", (1.0, 54.0, 10.0),
-                              (PAD_WIDTH_MM * 0.5 + 0.5, 0.0, 0.0),
+    # The label strip follows the human-facing long side of the rounded cushion.
+    side_badge = bevelled_box("Pad_Side_Text_Strip", (80.0, 1.0, 12.0),
+                              (0.0, PAD_WIDTH_MM * 0.5 + 0.5,
+                               PAD_CENTER_FROM_TILT_Z),
                               MATERIALS["Base"], "Pad_Body", bevel=0.45)
-    side_rotation = Vector((1.0, 0.0, 0.0)).to_track_quat("Z", "Y").to_euler()
-    side_text = add_text("Pad_Side_Text", "SWIVEL REST", 4.3,
-                         (PAD_WIDTH_MM * 0.5 + 1.2, -22.0, 0.0),
+    side_rotation = (-math.pi / 2.0, 0.0, 0.0)
+    side_text = add_text("Pad_Side_Text", "SWIVEL REST", 6.0,
+                         (0.0, PAD_WIDTH_MM * 0.5 + 1.2,
+                          PAD_CENTER_FROM_TILT_Z),
                          MATERIALS["Sage"], "Pad_Body",
-                         rotation=side_rotation, align_x="LEFT")
+                         rotation=side_rotation, align_x="CENTER")
 
     # Register construction objects for hierarchical parenting in rig().
     return {"body": body, "receiver": receiver, "receiver_liner": receiver_liner,
@@ -970,39 +1196,48 @@ def make_pad() -> dict[str, bpy.types.Object]:
 
 
 def make_baseplate() -> dict[str, bpy.types.Object]:
-    """Create the removable darker-green underside plate with a stem aperture."""
-    plate = bevelled_box("Pad_Removable_BasePlate",
-                         (PAD_WIDTH_MM - 6.0, PAD_LENGTH_MM - 8.0,
-                          BASE_PLATE_THICKNESS_MM),
-                         (0.0, 0.0, -15.5), MATERIALS["Base"],
-                         "Pad_BasePlate", bevel=0.0)
-    # Circular opening clears the receiver barrel at the near end of the pad.
-    bpy.ops.mesh.primitive_cylinder_add(vertices=96, radius=18.0, depth=8.0,
-                                        location=(0.0, PAD_MOUNT_OFFSET_Y, -15.5))
-    cutter = bpy.context.object
-    cutter.name = "TEMP_BasePlate_Stem_Clearance"
-    boolean_difference(plate, cutter, "Receiver aperture Ø36 mm")
-    # A machined channel clears the transverse Part B barrel underneath.
+    """Create the rounded removable plate with an axle channel and latch window."""
+    length = PAD_LENGTH_MM - 8.0
+    width = PAD_WIDTH_MM - 6.0
+    half_length, half_width = length * 0.5, width * 0.5
+    half_thickness = BASE_PLATE_THICKNESS_MM * 0.5
+    steps = 96
+    outline = [superellipse_point(math.tau * index / steps,
+                                  half_length, half_width, exponent=5.0)
+               for index in range(steps)]
+    vertices = ([(x, y, -half_thickness) for x, y in outline]
+                + [(x, y, half_thickness) for x, y in outline])
+    faces = [tuple(reversed(range(steps))), tuple(range(steps, 2 * steps))]
+    for index in range(steps):
+        following = (index + 1) % steps
+        faces.append((index, following, steps + following, steps + index))
+    plate = mesh_object("Pad_Removable_BasePlate", vertices, faces,
+                        "Pad_BasePlate", MATERIALS["Base"])
+    plate.location = (0.0, 0.0, BASE_PLATE_CENTER_Z_MM)
+    plate["Nominal size mm"] = f"{length:.0f} × {width:.0f} × {BASE_PLATE_THICKNESS_MM:.0f}"
+    # A machined channel clears the transverse Part B barrel and axle underneath;
+    # the central receiver ends above this pivot and does not pierce the plate.
     bpy.ops.mesh.primitive_cylinder_add(vertices=96, radius=13.5,
                                         depth=PAD_WIDTH_MM + 12.0,
                                         location=(0.0, AXLE_PLATE_OFFSET_Y_MM, TILT_AXIS_Z),
-                                        rotation=(0.0, math.pi / 2.0, 0.0))
+                                        rotation=(math.pi / 2.0, 0.0, 0.0))
     axle_channel = bpy.context.object
     axle_channel.name = "TEMP_BasePlate_PartB_Channel"
     boolean_difference(plate, axle_channel, "Part B barrel channel")
     # A narrow access opening lets the terracotta slider sit flush through the plate.
     bpy.ops.mesh.primitive_cube_add(size=1.0,
-                                    location=(-32.0, AXLE_PLATE_OFFSET_Y_MM, -15.5))
+                                    location=(0.0, AXLE_PLATE_OFFSET_Y_MM + 32.0,
+                                              BASE_PLATE_CENTER_Z_MM))
     slider_cutter = bpy.context.object
     slider_cutter.name = "TEMP_BasePlate_Slider_Window"
-    slider_cutter.dimensions = (18.0, 24.0, 8.0)
+    slider_cutter.dimensions = (24.0, 18.0, 8.0)
     apply_scale(slider_cutter)
     boolean_difference(plate, slider_cutter, "Slider access window")
     add_bevel(plate, 0.5, 3, "Base-plate machined edge")
     add_weighted_normals(plate)
     plate["Part"] = "Removable pad base plate"
-    plate["Stem aperture mm"] = 36.0
-    plate["Slider window mm"] = "18 × 24"
+    plate["Central mount note"] = "Solid center; the upper Ø22 receiver stops above the Part B axle"
+    plate["Slider window mm"] = "24 × 18"
     return {"plate": plate}
 
 
@@ -1081,14 +1316,19 @@ def make_latch() -> dict[str, bpy.types.Object]:
                         2.0, 1.6, 5.0, 0.38, MATERIALS["Aluminum"],
                         "Latch_Assembly")
 
-    # Low-profile spring seat and screw bosses inside the removable plate.
-    for i, (x, y) in enumerate(((-30.0, -55.0), (30.0, -55.0),
-                                (-30.0, 45.0), (30.0, 45.0)), 1):
+    # Four corner bosses and flush fasteners are referenced from the enlarged plate.
+    bolt_x = PAD_LENGTH_MM * 0.5 - 20.0
+    bolt_y = PAD_WIDTH_MM * 0.5 - 20.0
+    boss_center_z = BASE_PLATE_CENTER_Z_MM + BASE_PLATE_THICKNESS_MM * 0.5 + 3.0
+    fastener_center_z = BASE_PLATE_CENTER_Z_MM - BASE_PLATE_THICKNESS_MM * 0.5 - 0.5
+    bolt_positions = ((-bolt_x, -bolt_y), (bolt_x, -bolt_y),
+                      (-bolt_x, bolt_y), (bolt_x, bolt_y))
+    for i, (x, y) in enumerate(bolt_positions, 1):
         boss = cylinder(f"Pad_Base_Screw_Boss_{i}", 4.0, 6.0,
-                        (x, y, -12.0), MATERIALS["MetalDark"],
+                        (x, y, boss_center_z), MATERIALS["MetalDark"],
                         "Latch_Assembly", axis=Vector((0.0, 0.0, 1.0)), bevel=0.6)
         head = cylinder(f"BasePlate_Fastener_{i}", 2.6, 1.0,
-                        (x, y, -17.1), MATERIALS["Aluminum"],
+                        (x, y, fastener_center_z), MATERIALS["Aluminum"],
                         "Pad_BasePlate", axis=Vector((0.0, 0.0, 1.0)), bevel=0.35)
 
     # A hidden-by-default accent halo pulses during the latch click.
@@ -1119,14 +1359,17 @@ def make_empty(name: str, collection_name: str, location=(0.0, 0.0, 0.0),
     return remember(obj)
 
 
-def rig(cart_root: bpy.types.Object) -> dict[str, bpy.types.Object]:
-    """Create the cart-mounted rig, defaulting to a 45° leaning pose."""
+def rig(cart_root: bpy.types.Object,
+        handle: dict[str, object]) -> dict[str, bpy.types.Object]:
+    """Create the rig on the measured cart handle, at a level neutral pad pose."""
     controller = make_empty("Assembly_Controller", "Rig", (0.0, 0.0, 0.0), "CUBE", 12.0)
     parent_local(controller, cart_root)
-    controller.location = CART_HANDLEBAR_CENTER_MM
-    controller.rotation_euler.z = math.pi / 2.0
+    controller.location = Vector(handle["center"])
+    controller.rotation_mode = "QUATERNION"
+    controller.rotation_quaternion = Vector((1.0, 0.0, 0.0)).rotation_difference(
+        Vector(handle["axis"]).normalized())
     controller["Swivel"] = 0.0       # degrees; manually editable
-    controller["Tilt"] = 45.0        # 45° presentation pose; 0–90 constrained
+    controller["Tilt"] = 0.0         # neutral pad is level and parallel to the handlebar
     controller["Plate_Roll"] = 0.0   # degrees around the pad long axis
     controller["Explode"] = 0.0
     controller["PartB_Insertion"] = 0.0
@@ -1134,7 +1377,7 @@ def rig(cart_root: bpy.types.Object) -> dict[str, bpy.types.Object]:
     controller["Collar_Insertion"] = 0.0
     for key, (low, high, description) in {
         "Swivel": (-45.0, 45.0, "Rest-pad lateral swivel about the handle mount; ±45 degrees"),
-        "Tilt": (0.0, 90.0, "Pad pitch; 45° presentation pose, mechanically limited to 0–90 degrees"),
+        "Tilt": (0.0, 90.0, "Optional pad pitch; neutral is level at 0°, limited to 0–90 degrees"),
         "Plate_Roll": (-45.0, 45.0, "Base plate and axle roll around pad long axis"),
         "Explode": (0.0, 1.0, "Manual exploded-state control"),
         "PartB_Insertion": (0.0, 1.0, "Part B axial exploded distance"),
@@ -1156,20 +1399,33 @@ def rig(cart_root: bpy.types.Object) -> dict[str, bpy.types.Object]:
     parent_local(swivel, part_a_root)
     remember(swivel, "SwivelAxis")
 
-    # Plate axis is the pad's fore-aft Y axis; it carries the base plate and axle.
+    # The plate axis carries the base plate and axle. The controller's +90°
+    # alignment maps the cushion's long local X axis onto the cart handlebar.
     plate_axis = make_empty("Plate_Axis", "Rig",
                             (0.0, PAD_CENTER_Y, PLATE_AXIS_Z), "CIRCLE", 8.0)
     parent_local(plate_axis, swivel)
-    # Local pad long axis Y maps to world X, parallel to the handlebar.
-    plate_axis.rotation_euler.z = -math.pi / 2.0
     remember(plate_axis, "PlateAxis")
 
-    # Tilt_Axis is nested under Swivel_Axis through Plate_Axis, so the Part B
-    # pivot stays coaxial with the axle when the base assembly rolls.
+    # Align Tilt_Axis local X with the transverse Part B axle (world X).
     tilt = make_empty("Tilt_Axis", "Rig",
                       (0.0, AXLE_PLATE_OFFSET_Y_MM, TILT_AXIS_Z), "CIRCLE", 8.0)
     parent_local(tilt, plate_axis)
+    tilt.rotation_euler.z = -math.pi / 2.0
     remember(tilt, "TiltAxis")
+
+    # Restore the pad's long-axis frame after orienting the pitch hinge axis.
+    pad_frame = make_empty("Pad_Body_Frame", "Rig", (0.0, 0.0, 0.0),
+                           "PLAIN_AXES", 4.0)
+    parent_local(pad_frame, tilt)
+    pad_frame.rotation_euler.z = math.pi / 2.0
+    remember(pad_frame, "PadFrame")
+
+    # The latch uses a local frame aligned to the Part B slot on the human-facing side.
+    latch_frame = make_empty("Latch_Assembly_Frame", "Rig", (0.0, 0.0, 0.0),
+                             "PLAIN_AXES", 4.0)
+    parent_local(latch_frame, pad_frame)
+    latch_frame.rotation_euler.z = -math.pi / 2.0
+    remember(latch_frame, "LatchFrame")
 
     # Extra roots make each component explode exactly along its own axis.
     axle_root = make_empty("PartB_Explode_Root", "Rig",
@@ -1197,15 +1453,16 @@ def rig(cart_root: bpy.types.Object) -> dict[str, bpy.types.Object]:
     parent_local(axle, axle_root)
     axle.location = (0.0, 0.0, 0.0)
     axle.rotation_mode = "QUATERNION"
-    # Local +Z runs along the axle (+X), and local +X faces upward so the
-    # oval slot and terracotta engagement pin remain visible from above.
-    axle.rotation_quaternion = Matrix(((0.0, 0.0, 1.0),
-                                       (0.0, -1.0, 0.0),
+    # Local +Z runs along the transverse axle (world +X); local +X faces up
+    # so the oval slot and engagement pin remain visible above the hinge.
+    axle.rotation_quaternion = Matrix(((0.0, -1.0, 0.0),
+                                       (0.0, 0.0, -1.0),
                                        (1.0, 0.0, 0.0))).to_quaternion()
     parent_local(OBJECTS["PartB_Gradient_Side_Strip"], axle)
     OBJECTS["PartB_Gradient_Side_Strip"].location = (PART_B_DIAMETER_MM * 0.5 - 0.85, 0.0, -18.0)
     rear_barrel = OBJECTS["Pad_Rear_Pivot_Barrel"]
     parent_local(rear_barrel, plate_axis)
+    set_axis(rear_barrel, Vector((0.0, -1.0, 0.0)))
     rear_barrel.location = (0.0, AXLE_PLATE_OFFSET_Y_MM, TILT_AXIS_Z)
 
     # The pad shell and its stem socket tilt about Part B; base plate and axle do not.
@@ -1215,43 +1472,48 @@ def rig(cart_root: bpy.types.Object) -> dict[str, bpy.types.Object]:
     for key in body_objs:
         obj = OBJECTS.get(key)
         if obj is not None:
-            parent_local(obj, tilt)
+            parent_local(obj, pad_frame)
     OBJECTS["PadBody"].location = (0.0, PAD_CENTER_Y - TILT_AXIS_OFFSET_Y_MM,
                                     PAD_CENTER_FROM_TILT_Z)
-    OBJECTS["Pad_Stem_Receiver_Barrel"].location = (0.0, -TILT_AXIS_OFFSET_Y_MM, -7.0)
-    OBJECTS["Pad_Receiver_Gradient_Liner"].location = (0.0, -TILT_AXIS_OFFSET_Y_MM, -7.0)
-    OBJECTS["Pad_Embossed_Logo_Plate"].location = (0.0, PAD_LENGTH_MM * 0.46,
-                                                   PAD_THICKNESS_MM * 0.5)
-    OBJECTS["Pad_Logo_RP"].location = (0.0, PAD_LENGTH_MM * 0.46,
-                                      PAD_THICKNESS_MM * 0.5 + 0.56)
-    OBJECTS["Pad_Side_Text_Strip"].location = (PAD_WIDTH_MM * 0.5 + 0.5, 0.0, 0.0)
-    OBJECTS["Pad_Side_Text"].location = (PAD_WIDTH_MM * 0.5 + 1.2, -22.0, 0.0)
+    OBJECTS["Pad_Stem_Receiver_Barrel"].location = (0.0, -TILT_AXIS_OFFSET_Y_MM,
+                                                     PAD_STEM_CENTER_Z_MM)
+    OBJECTS["Pad_Receiver_Gradient_Liner"].location = (0.0, -TILT_AXIS_OFFSET_Y_MM,
+                                                       PAD_STEM_CENTER_Z_MM)
+    logo_x_local = -PAD_LENGTH_MM * 0.34
+    logo_surface_z = (PAD_CENTER_FROM_TILT_Z + PAD_THICKNESS_MM * 0.5
+                      - PAD_CROWN_HEIGHT_MM * (logo_x_local / (PAD_LENGTH_MM * 0.5)) ** 2)
+    OBJECTS["Pad_Embossed_Logo_Plate"].location = (logo_x_local, 0.0,
+                                                   logo_surface_z + 0.5)
+    OBJECTS["Pad_Logo_RP"].location = (logo_x_local, 0.0,
+                                      logo_surface_z + 1.06)
+    OBJECTS["Pad_Side_Text_Strip"].location = (0.0, PAD_WIDTH_MM * 0.5 + 0.5,
+                                                PAD_CENTER_FROM_TILT_Z)
+    OBJECTS["Pad_Side_Text"].location = (0.0, PAD_WIDTH_MM * 0.5 + 1.2,
+                                         PAD_CENTER_FROM_TILT_Z)
 
     plate = OBJECTS["Pad_Removable_BasePlate"]
     parent_local(plate, base_root)
-    plate.location = (0.0, 0.0, -15.5)
-    # The receiver aperture cutter was centered on the near edge in plate-local Y.
+    plate.location = (0.0, 0.0, BASE_PLATE_CENTER_Z_MM)
+    # Keep the center plate solid; only the transverse axle channel is cut through it.
     for name, obj in list(OBJECTS.items()):
         if name.startswith("BasePlate_Fastener_"):
             parent_local(obj, base_root)
             # keep screws flush with the underside
-            obj.location.z = -17.1
+            obj.location.z = BASE_PLATE_CENTER_Z_MM - BASE_PLATE_THICKNESS_MM * 0.5 - 0.5
 
-    # Latch internals are inside the moving pad body and follow Tilt_Axis.
-    latch_keys = ("SliderRoot", "LatchLever", "Latch_Lever_Pivot_Pin",
-                  "Latch_Return_Spring", "LatchPulse")
-    for key in latch_keys:
+    # Latch internals stay on the moving pad frame; the lever retains its driven pivot hierarchy.
+    for key in ("SliderRoot", "Latch_Return_Spring", "LatchPulse"):
         obj = OBJECTS.get(key)
         if obj is not None:
-            parent_local(obj, tilt)
+            parent_local(obj, latch_frame)
     slider_root = OBJECTS["SliderRoot"]
     slider_root.location = (0.0, 0.0, -9.0)
     OBJECTS["SliderButton"].location = (-32.0, 0.0, 0.0)
     lever_root = OBJECTS["LeverRoot"]
-    parent_local(lever_root, tilt)
+    parent_local(lever_root, latch_frame)
     lever_root.location = (-38.0, 0.0, 6.0)
     OBJECTS["LatchLever"].location = (7.0, 0.0, 0.0)
-    OBJECTS["Latch_Lever_Pivot_Pin"].location = (-38.0, 0.0, 6.0)
+    OBJECTS["Latch_Lever_Pivot_Pin"].location = (0.0, 0.0, 0.0)
     OBJECTS["LatchPin"].location = (0.0, 0.0, 3.0)
     # Helix spline points already carry their local center coordinates.
     OBJECTS["Latch_Return_Spring"].location = (0.0, 0.0, 0.0)
@@ -1270,9 +1532,9 @@ def rig(cart_root: bpy.types.Object) -> dict[str, bpy.types.Object]:
     add_property_driver(plate_axis, "rotation_euler", 1, controller, "Plate_Roll",
                         "value * 0.017453292519943295")
     add_property_driver(part_a_root, "location", 2, controller, "Explode", "40.0 * value")
-    add_multi_property_driver(axle_root, "location", 0, controller,
+    add_multi_property_driver(axle_root, "location", 1, controller,
                               {"explode": "Explode", "insert": "PartB_Insertion"},
-                              "18.0 * explode + 42.0 * insert")
+                              "-18.0 * explode - 42.0 * insert")
     add_multi_property_driver(base_root, "location", 2, controller,
                               {"explode": "Explode", "separate": "BasePlate_Separation"},
                               "-14.0 * explode - 24.0 * separate")
@@ -1303,7 +1565,8 @@ def rig(cart_root: bpy.types.Object) -> dict[str, bpy.types.Object]:
 
     return {"controller": controller, "part_a_root": part_a_root,
             "swivel": swivel, "plate_axis": plate_axis,
-            "tilt": tilt, "axle_root": axle_root, "base_root": base_root,
+            "tilt": tilt, "pad_frame": pad_frame, "latch_frame": latch_frame,
+            "axle_root": axle_root, "base_root": base_root,
             "lever_root": lever_root, "slider_root": slider_root}
 
 
@@ -1327,9 +1590,12 @@ def add_area_light(name: str, location, target, energy: float, size: float,
     return obj
 
 
-def setup_camera_lights() -> dict[str, bpy.types.Object]:
-    """Set the cream studio, context-aware 35 mm camera, and broad softboxes."""
+def setup_camera_lights(handle_center_mm) -> dict[str, bpy.types.Object]:
+    """Set a product camera plus a wide view containing cart and human scale."""
     scene = bpy.context.scene
+    hx, hy, hz = Vector(handle_center_mm)
+    # Lift the product-camera target so the hero views include the shopper's head and hands.
+    product_focus = (hx, hy, hz + 150.0)
     backdrop = bevelled_box("Warm_Cream_Cyclorama", (4500.0, 4500.0, 2.0),
                             (0.0, 0.0, -30.0), MATERIALS["Backdrop"],
                             "Stage", bevel=0.0)
@@ -1344,24 +1610,25 @@ def setup_camera_lights() -> dict[str, bpy.types.Object]:
     camera_data.dof.aperture_fstop = 8.0
     camera = bpy.data.objects.new("Studio_35mm_Camera", camera_data)
     ensure_collection("Stage").objects.link(camera)
-    target = Vector((-35.0, 0.0, 555.0))
-    camera.location = (1700.0, -1700.0, 1200.0)
+    target = Vector(product_focus)
+    camera.location = (hx + 1500.0, hy - 1500.0, hz + 300.0)
     aim_at(camera, target)
     scene.camera = camera
     remember(camera, "Camera")
 
-    focus = make_empty("Camera_Focus_Target", "Stage", (-35.0, 0.0, 555.0), "SPHERE", 3.0)
+    focus = make_empty("Camera_Focus_Target", "Stage", product_focus, "SPHERE", 3.0)
     camera_data.dof.focus_object = focus
     remember(focus, "FocusTarget")
 
     warm = LINEAR_PALETTE["BACKDROP"]
     cool = mix_rgba(LINEAR_PALETTE["SAGE"], LINEAR_PALETTE["BACKDROP"], 0.55)
+    # Brighter, broad sources keep palette-derived dark materials readable in the mm-scale scene.
     add_area_light("Softbox_Key_Warm", (800.0, -1450.0, 2200.0), (-160.0, 0.0, 650.0),
-                   3400.0, 1250.0, warm)
+                   13600.0, 1250.0, warm)
     add_area_light("Softbox_Fill_Sage", (-1450.0, -250.0, 1450.0), (-420.0, 0.0, 920.0),
-                   1800.0, 1100.0, cool)
+                   7200.0, 1100.0, cool)
     add_area_light("Softbox_Rim_Warm", (250.0, 1450.0, 1900.0), (-150.0, 0.0, 820.0),
-                   3600.0, 1050.0, warm)
+                   14400.0, 1050.0, warm)
 
     # World background stays warm, soft, and palette-matched.
     world = bpy.data.worlds.get("World") or bpy.data.worlds.new("World")
@@ -1372,25 +1639,24 @@ def setup_camera_lights() -> dict[str, bpy.types.Object]:
     output = nodes.new("ShaderNodeOutputWorld")
     background = nodes.new("ShaderNodeBackground")
     background.inputs["Color"].default_value = LINEAR_PALETTE["BACKDROP"]
-    background.inputs["Strength"].default_value = 0.32
+    background.inputs["Strength"].default_value = 1.2
     world.node_tree.links.new(background.outputs["Background"], output.inputs["Surface"])
 
-    # Establish a clear wide-cart intro, smooth push to the below-handle
-    # attachment, detailed motion shots, then a steady hero close-up. Camera
-    # movement is eased and the old snap-bounce jitter is intentionally removed.
+    # Show the complete shopper/cart/attachment proportions early, then move
+    # into measured-handle close-ups for clamp, swivel, and latch detail.
     camera_poses = (
-        (1,   (-490.0, 0.0, 980.0), -50.0, 1300.0, 20.0),
-        (24,  (-35.0, 0.0, 430.0), -48.0, 2950.0, 15.0),
-        (48,  (-175.0, 0.0, 790.0), -52.0, 1750.0, 18.0),
-        (96,  (-490.0, 0.0, 990.0), -55.0, 930.0, 21.0),
-        (144, (-490.0, 0.0, 990.0), -52.0, 850.0, 22.0),
-        (168, (-490.0, 0.0, 980.0), -50.0, 790.0, 22.0),
-        (192, (-490.0, 0.0, 980.0), -50.0, 790.0, 22.0),
-        (216, (-490.0, 0.0, 965.0), -48.0, 790.0, 23.0),
-        (240, (-490.0, 0.0, 965.0), -48.0, 790.0, 23.0),
-        (258, (-490.0, 0.0, 975.0), -45.0, 730.0, 22.0),
-        (276, (-490.0, 0.0, 975.0), -45.0, 730.0, 22.0),
-        (312, (-490.0, 0.0, 965.0), -48.0, 900.0, 22.0),
+        (1,   product_focus, -50.0, 1500.0, 20.0),
+        (24,  (-170.0, 0.0, 850.0), -58.0, 3600.0, 17.0),
+        (48,  (hx - 120.0, hy, hz - 260.0), -52.0, 1750.0, 18.0),
+        (96,  product_focus, -55.0, 1500.0, 21.0),
+        (144, product_focus, -52.0, 1650.0, 22.0),
+        (168, product_focus, -50.0, 1850.0, 22.0),
+        (192, product_focus, -50.0, 1850.0, 22.0),
+        (216, product_focus, -48.0, 1900.0, 23.0),
+        (240, product_focus, -48.0, 1900.0, 23.0),
+        (258, product_focus, -45.0, 1750.0, 22.0),
+        (276, product_focus, -45.0, 1750.0, 22.0),
+        (312, product_focus, -48.0, 1900.0, 22.0),
     )
     for frame, target_xyz, azimuth, distance, elevation in camera_poses:
         camera_target = Vector(target_xyz)
@@ -1497,7 +1763,7 @@ def make_arrows_labels(camera: bpy.types.Object) -> dict[str, object]:
     swivel_arrow = arc_arrow("Swivel_Arrow_Terracotta", (0.0, 0.0, 4.0), 38.0,
                              "XY", MATERIALS["Terracotta"], "Arrows_Labels", swivel)
     tilt_arrow = arc_arrow("Tilt_Arrow_Sage", (0.0, 0.0, 0.0), 34.0,
-                           "YZ", MATERIALS["Sage"], "Arrows_Labels", swivel)
+                           "YZ", MATERIALS["Sage"], "Arrows_Labels", tilt)
     labels = []
     panels = []
     for name, x, text in (("PART_A", -128.0, "PART A"),
@@ -1537,8 +1803,7 @@ def key_scale(obj: bpy.types.Object, frame: int, value: float) -> None:
 
 
 def animate(rig_objects: dict[str, bpy.types.Object],
-            arrow_objects: dict[str, object],
-            cart_root: bpy.types.Object) -> None:
+            arrow_objects: dict[str, object]) -> None:
     scene = bpy.context.scene
     controller = rig_objects["controller"]
     part_a_root = rig_objects["part_a_root"]
@@ -1547,25 +1812,11 @@ def animate(rig_objects: dict[str, bpy.types.Object],
 
     for name, (start, end) in TIMING.items():
         scene.timeline_markers.new(name.title().replace("_", " "), frame=start)
-    scene.timeline_markers.new("Cart sway cycle", frame=1)
+    scene.timeline_markers.new("Rest-pad side swivel", frame=TIMING["SWIVEL"][0])
     scene.timeline_markers.new("Hero end", frame=FRAME_END)
 
-    # The cart makes a gentle left/right steering sweep while the attachment
-    # pivots like a pedal. Translation is small enough to stay on the floor.
-    cart_sway_keys = ((1, 0.0, 0.0), (40, CART_SWAY_MM, CART_SWAY_YAW_DEG),
-                      (79, 0.0, 0.0), (118, -CART_SWAY_MM, -CART_SWAY_YAW_DEG),
-                      (157, 0.0, 0.0), (196, CART_SWAY_MM, CART_SWAY_YAW_DEG),
-                      (235, 0.0, 0.0), (274, -CART_SWAY_MM, -CART_SWAY_YAW_DEG),
-                      (312, 0.0, 0.0))
-    for frame, lateral_mm, yaw_deg in cart_sway_keys:
-        cart_root.location.y = lateral_mm
-        cart_root.rotation_euler.z = math.radians(yaw_deg)
-        key_component(cart_root, "location", 1, frame)
-        key_component(cart_root, "rotation_euler", 2, frame)
-    tune_action(cart_root)
-
-    # Controller properties exist for direct/manual posing; drivers route them
-    # to the axes and explode offsets. Independent insertion controls stage order.
+    # The cart and scale figure stay fixed as references. The attachment below
+    # the central clamp pivots; controller properties also stage the exploded view.
     property_tracks = {
         "Explode": ((1, 0.0), (24, 0.0), (34, 0.8), (40, 1.0),
                     (52, 0.35), (64, 0.0), (96, 0.0), (312, 0.0)),
@@ -1576,7 +1827,7 @@ def animate(rig_objects: dict[str, bpy.types.Object],
         "Collar_Insertion": ((1, 0.0), (24, 0.0), (40, 1.0), (56, 0.6),
                              (72, 0.0), (96, 0.0), (312, 0.0)),
         "Swivel": ((1, 0.0), (144, 0.0)),
-        "Tilt": ((1, 45.0), (192, 45.0)),
+        "Tilt": ((1, 0.0), (192, 0.0)),
         "Plate_Roll": ((1, 0.0), (312, 0.0)),
     }
     for prop, keys in property_tracks.items():
@@ -1614,8 +1865,8 @@ def animate(rig_objects: dict[str, bpy.types.Object],
         bore.value = value
         bore.keyframe_insert(data_path="value", frame=frame)
 
-    # The pad is pitched 45° below the handle at rest. Its swivel sweeps
-    # side-to-side like a pedal, pausing at 15° detents on both ±45° ends.
+    # Keep the neutral pad level and parallel to the handlebar. The attachment
+    # sweeps around its central vertical mount, pausing at 15° detents to ±45°.
     swivel_keys = (
         (145, 0.0),
         (148, 15.0), (149, 15.0),
@@ -1634,10 +1885,10 @@ def animate(rig_objects: dict[str, bpy.types.Object],
     for frame, value in swivel_keys:
         key_property(controller, "Swivel", frame, value)
 
-    # Demonstrate a restrained tilt adjustment around the requested 45° pose;
-    # the rig itself remains mechanically limited to the full 0–90° range.
-    for frame, value in ((193, 45.0), (204, 58.0), (216, 72.0),
-                         (228, 58.0), (240, 45.0), (312, 45.0)):
+    # A small secondary pitch demonstration returns to the required level pose;
+    # the neutral default is 0° and the controller retains its 0–90° limit.
+    for frame, value in ((193, 0.0), (204, 8.0), (216, 14.0),
+                         (228, 8.0), (240, 0.0), (312, 0.0)):
         key_property(controller, "Tilt", frame, value)
     for frame in (193, 240, 312):
         key_property(controller, "Plate_Roll", frame, 0.0)
@@ -1711,7 +1962,7 @@ def animate(rig_objects: dict[str, bpy.types.Object],
             key_scale(obj, frame, value)
         tune_action(obj)
 
-    # Camera focus and the animated context-cart path are keyed above.
+    # Camera focus and view framing are keyed above; the cart stays stationary.
     scene.frame_start = FRAME_START
     scene.frame_end = FRAME_END
     scene.render.fps = FPS
@@ -1753,9 +2004,9 @@ def render_setup() -> None:
     scene.render.filepath = "//render/animation.mp4"
     scene.render.fps = FPS
     scene.view_settings.view_transform = "AgX"
-    # Available in recent Blender 4.x; fall back gracefully if a build uses a different label.
+    # A restrained higher-contrast AgX look keeps the cart wirework and pad edges legible.
     try:
-        scene.view_settings.look = "AgX - Base Contrast"
+        scene.view_settings.look = "AgX - Medium High Contrast"
     except TypeError:
         pass
     scene.view_settings.exposure = 0.0
@@ -1803,7 +2054,7 @@ def clear_scene() -> None:
 
 
 def organize_collections() -> None:
-    for name in ("Cart_Context", "PartA_Clamp", "PartB_Axle", "Pad_Body", "Pad_BasePlate",
+    for name in ("Cart_Context", "Human_Context", "PartA_Clamp", "PartB_Axle", "Pad_Body", "Pad_BasePlate",
                  "Latch_Assembly", "Handlebar", "Rig", "Arrows_Labels", "Stage"):
         ensure_collection(name)
 
@@ -1818,6 +2069,8 @@ def main() -> None:
     organize_collections()
     make_materials()
     cart_context = make_cart_context()
+    human_context = make_human_scale_figure(
+        cart_context["root"], cart_context["handle"]["center"])
 
     clamp_parts = make_clamp()
     handlebar = make_handlebar()
@@ -1825,13 +2078,14 @@ def main() -> None:
     pad_parts = make_pad()
     base_parts = make_baseplate()
     latch_parts = make_latch()
-    rig_objects = rig(cart_context["root"])
+    rig_objects = rig(cart_context["root"], cart_context["handle"])
     parent_local(handlebar, rig_objects["controller"])
     handlebar.location = (0.0, 0.0, 0.0)
-    stage = setup_camera_lights()
+    stage = setup_camera_lights(cart_context["handle"]["center"])
     arrows = make_arrows_labels(stage["camera"])
-    animate(rig_objects, arrows, cart_context["root"])
+    animate(rig_objects, arrows)
     render_setup()
+    scene.frame_set(STARTUP_FRAME)
     configure_startup_view()
 
     # Product mesh transforms are applied; a small allowlist uses scale as the
@@ -1849,14 +2103,25 @@ def main() -> None:
         print("Product mesh scales applied; animated graphic scales are intentional.")
     scene["Product"] = "Swivel Rest-Pad Cart Attachment"
     scene["Built with Blender"] = bpy.app.version_string
-    scene["Handlebar assumption"] = f"Ø{HANDLEBAR_DIAMETER_MM:.0f} mm; user-specified assumption"
-    scene["Clamp fit note"] = "OD28 with nominal 3 mm wall yields ID22; the visual snap key expands the bore for the assumed Ø25 bar. Verify/engineer before prototyping."
+    source_handle = cart_context["handle"]
+    scene["Handlebar prop"] = f"Ø{HANDLEBAR_DIAMETER_MM:.0f} × {HANDLEBAR_LENGTH_MM:.0f} mm; visual overlay"
+    scene["Measured cart handle"] = (
+        f"Ø{source_handle['diameter']:.1f} × {source_handle['length']:.1f} mm, "
+        f"center {tuple(round(v, 1) for v in source_handle['center'])} mm")
+    scene["Clamp fit note"] = (
+        "OD28 / nominal 3 mm wall gives ID22; flex is modeled around the copied-cart "
+        "handle geometry. Visual concept only; fit, tolerances, and loads are not validated.")
     scene["Part A"] = "One central snap C-clamp + downward 90° branch + windowed rib collar"
     scene["Part B"] = "Ø18 × 100 mm slotted pivot axle with latch pin"
+    scene["Pad size"] = "280 × 160 × 35 mm visual scale target; not an engineering recommendation"
     scene["Intended use"] = "Cart-mounted cushioned leaning support; not a seat"
     scene["Cart context source"] = "Copied Shopping Cart mesh from blender/source/hcd mockup.blend; original untouched"
-    scene["Cart motion"] = "Smooth lateral steering sway with small yaw; two side-to-side cycles"
-    scene["Rest-pad orientation"] = "Mounted below the handle; default 45° tilt with pedal-like ±45° lateral swivel"
+    scene["Cart motion"] = "Stationary context; no cart-root animation; attachment rig moves independently"
+    scene["Rest-pad orientation"] = (
+        "Neutral level and parallel to the cart handlebar; central-mount side sweep ±45°; "
+        "secondary pitch returns to level")
+    scene["Human scale comparison"] = "Stylized 1700 mm standing adult; visual-only, not ergonomic validation"
+    scene["Startup frame"] = STARTUP_FRAME
     scene["Palette"] = "F2EFE9 cream · 3A4C40 forest · 8BA892 sage · C4694A terracotta"
     scene["Export note"] = "No animation render is started unless RENDER=True"
 
@@ -1864,7 +2129,7 @@ def main() -> None:
     OUTPUT_BLEND.parent.mkdir(parents=True, exist_ok=True)
     bpy.ops.wm.save_as_mainfile(filepath=str(OUTPUT_BLEND))
     print(f"Saved animated Blender model: {OUTPUT_BLEND}")
-    print("Ready at frame 1. Press Spacebar to play; Render > Render Animation to export H.264.")
+    print(f"Ready at frame {STARTUP_FRAME} (full scale view). Press Spacebar to play; Render > Render Animation to export H.264.")
     print(f"Camera: 35 mm, {scene.render.resolution_x} × {scene.render.resolution_y}; "
           f"Cycles {scene.cycles.samples} samples; denoising enabled; render flag={RENDER}")
     if RENDER:
