@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
-"""Build a parametric, rigged swivel-rest-pad concept and save the .blend.
+"""Build a parametric, rigged swivel-rest-pad concept in cart context.
 
-Run with Blender 4.x (also tested with bpy 5.x):
-    blender --background --python build_swivel_rest_pad.py
+Run from the repository with Blender 4.5.x:
+    blender --background --python blender/swivel_rest_pad/build_swivel_rest_pad.py
 
-All dimensions below are millimeters. The scene unit scale is 0.001, so a
-coordinate of 1.0 is displayed as 1 mm. The saved file opens at frame 1, ready
-for playback. RENDER is intentionally False: use Render > Render Animation, or
-set RENDER=True to render the configured H.264 animation.
+The builder copies only the Shopping Cart context mesh from
+blender/source/hcd mockup.blend; that source project is never edited. All
+attachment dimensions are millimeters. RENDER stays False by default.
 """
 
 from __future__ import annotations
@@ -75,19 +74,28 @@ TIMING = {
 FRAME_START = 1
 FRAME_END = 312
 
-# The stem axis sits at the top end of Part A's branch. The pad is offset
-# forward from the bar so its mount is near one rounded end, not at the midpoint.
+# Mount at the cart's existing push handle. The C-clamp and handlebar axes are
+# rotated into the cart's local Y direction; Part A descends from the handle,
+# leaving the cushioned rest-pad below it. The uploaded cart reference is copied
+# into this scene as context; its source file is never modified.
+CART_HANDLEBAR_CENTER_MM = (-490.0, 0.0, 1090.0)
+CART_HANDLEBAR_AXIS = Vector((0.0, 1.0, 0.0))
+CART_CONTEXT_SCALE = 1000.0
+CART_SWAY_MM = 72.0
+CART_SWAY_YAW_DEG = 3.0
 CLAMP_CENTER_Z = CLAMP_OUTER_DIAMETER_MM / 2.0
-BRANCH_TIP_Z = CLAMP_CENTER_Z + BRANCH_LENGTH_MM
-PAD_MOUNT_OFFSET_Y = -55.0
+BRANCH_DIRECTION = -1.0
+BRANCH_TIP_Z = BRANCH_DIRECTION * (CLAMP_CENTER_Z + BRANCH_LENGTH_MM)
+PAD_MOUNT_OFFSET_Y = 0.0
 PAD_CENTER_Y = -PAD_MOUNT_OFFSET_Y
-TILT_AXIS_OFFSET_Y_MM = 35.0  # separate rear hinge from the central stem socket
+TILT_AXIS_OFFSET_Y_MM = 35.0  # Part B hinge offset along the pad long axis
 AXLE_PLATE_OFFSET_Y_MM = TILT_AXIS_OFFSET_Y_MM - PAD_CENTER_Y
-PLATE_AXIS_Z = 16.0
+PLATE_AXIS_Z = BRANCH_DIRECTION * 16.0
 TILT_AXIS_Z = -8.0
 PAD_CENTER_FROM_TILT_Z = 8.0
 
 PROJECT_DIR = Path(__file__).resolve().parent
+CART_REFERENCE_BLEND = PROJECT_DIR.parent / "source" / "hcd mockup.blend"
 OUTPUT_BLEND = PROJECT_DIR / "swivel_pad_animated.blend"
 
 COLLECTIONS: dict[str, bpy.types.Collection] = {}
@@ -527,6 +535,7 @@ def make_materials() -> dict[str, bpy.types.Material]:
     terra = LINEAR_PALETTE["TERRACOTTA"]
     warm_aluminum = mix_rgba(sage, cream, 0.78)
     pale_sage = mix_rgba(cream, sage, 0.25)
+    cart_tint = mix_rgba(cream, sage, 0.14)
     dark_body = scale_rgba(body, 0.90)
 
     mats = {
@@ -539,6 +548,7 @@ def make_materials() -> dict[str, bpy.types.Material]:
         "SagePanel": principled_material("Sage hatch panel · 25% tint", pale_sage, 0.82, 0.0),
         "Label": principled_material("Forest labels", body, 0.64, 0.0),
         "Backdrop": principled_material("Cream plaster backdrop", cream, 0.92, 0.0),
+        "CartContext": principled_material("Cart context · pale palette sage", cart_tint, 0.72, 0.0),
     }
     # Fine procedural grain stays subtle and all tints remain palette-derived.
     add_noise_bump(mats["Pad"], 185.0, 0.07, 0.11)
@@ -591,12 +601,45 @@ def make_materials() -> dict[str, bpy.types.Material]:
     return MATERIALS
 
 
+def make_cart_context() -> dict[str, bpy.types.Object]:
+    """Append a palette-tinted copy of the uploaded cart as animated context."""
+    if not CART_REFERENCE_BLEND.is_file():
+        raise FileNotFoundError(f"Cart reference not found: {CART_REFERENCE_BLEND}")
+    cart_root = make_empty("Cart_Context_Root", "Cart_Context", (0.0, 0.0, 0.0),
+                           "PLAIN_AXES", 50.0)
+    existing_material_names = {material.name for material in bpy.data.materials}
+    with bpy.data.libraries.load(str(CART_REFERENCE_BLEND), link=False) as (source, target):
+        if "Shopping Cart" not in source.objects:
+            raise RuntimeError(f"No 'Shopping Cart' object in {CART_REFERENCE_BLEND}")
+        target.objects = ["Shopping Cart"]
+    cart = target.objects[0]
+    if cart is None:
+        raise RuntimeError("Could not append Shopping Cart reference object")
+    cart.name = "Shopping_Cart_Context"
+    link_object(cart, "Cart_Context")
+    parent_local(cart, cart_root)
+    cart.location = tuple(value * CART_CONTEXT_SCALE for value in cart.location)
+    cart.scale = tuple(value * CART_CONTEXT_SCALE for value in cart.scale)
+    if cart.type == "MESH":
+        cart.data.materials.clear()
+        cart.data.materials.append(MATERIALS["CartContext"])
+    for material in list(bpy.data.materials):
+        if material.name not in existing_material_names and material.users == 0:
+            bpy.data.materials.remove(material)
+    cart["Context source"] = "Copied from blender/source/hcd mockup.blend; source file unchanged"
+    cart["Reference dimensions mm"] = "1030 × 530 × 1112"
+    cart["Cart handle center mm"] = CART_HANDLEBAR_CENTER_MM
+    cart_root["Motion"] = "Smooth lateral sway and small steering yaw during the animation"
+    cart_root["Context only"] = True
+    return {"root": cart_root, "cart": cart}
+
+
 # ── Main C-profile clamp and Part A T-connector ───────────────────────────────
 def c_profile_clamp_mesh() -> tuple[list[tuple[float, float, float]], list[tuple[int, ...]], list[int], list[tuple[float, float]]]:
     outer_radius = CLAMP_OUTER_DIAMETER_MM / 2.0
     inner_radius = outer_radius - CLAMP_WALL_THICKNESS_MM
     slot_half = math.asin(min(0.999, CLAMP_SLOT_WIDTH_MM / (2.0 * outer_radius)))
-    gap_center = math.pi  # open side faces toward the camera/front (-Y)
+    gap_center = math.pi  # local -Y opening; mounted orientation faces cart-front (+X)
     start = gap_center + slot_half
     end = gap_center + math.tau - slot_half
     steps = 72
@@ -675,7 +718,7 @@ def make_clamp() -> dict[str, bpy.types.Object]:
     shell["Flex per lip mm"] = CLAMP_LIP_FLEX_MM
     remember(shell, "ClampShell")
 
-    branch_center_z = CLAMP_CENTER_Z + BRANCH_LENGTH_MM * 0.5
+    branch_center_z = BRANCH_DIRECTION * (CLAMP_CENTER_Z + BRANCH_LENGTH_MM * 0.5)
     branch = add_tube_mesh("PartA_T_Branch_Tube", BRANCH_DIAMETER_MM * 0.5,
                            BRANCH_DIAMETER_MM * 0.5 - BRANCH_WALL_MM,
                            BRANCH_LENGTH_MM, (0.0, 0.0, branch_center_z),
@@ -684,7 +727,7 @@ def make_clamp() -> dict[str, bpy.types.Object]:
     branch["Part"] = "Part A · 90-degree branch stem"
 
     # Hollow machined collar with six boolean windows, then three rib rings.
-    collar_center = CLAMP_CENTER_Z + BRANCH_LENGTH_MM - COLLAR_LENGTH_MM * 0.5
+    collar_center = BRANCH_DIRECTION * (CLAMP_CENTER_Z + BRANCH_LENGTH_MM - COLLAR_LENGTH_MM * 0.5)
     collar = add_tube_mesh("PartA_Ribbed_Window_Collar", COLLAR_DIAMETER_MM * 0.5,
                            BRANCH_DIAMETER_MM * 0.5 + 0.25,
                            COLLAR_LENGTH_MM, (0.0, 0.0, collar_center),
@@ -1076,19 +1119,22 @@ def make_empty(name: str, collection_name: str, location=(0.0, 0.0, 0.0),
     return remember(obj)
 
 
-def rig() -> dict[str, bpy.types.Object]:
-    """Create Swivel_Axis, Tilt_Axis (Part B), Plate_Axis, and drivers."""
+def rig(cart_root: bpy.types.Object) -> dict[str, bpy.types.Object]:
+    """Create the cart-mounted rig, defaulting to a 45° leaning pose."""
     controller = make_empty("Assembly_Controller", "Rig", (0.0, 0.0, 0.0), "CUBE", 12.0)
+    parent_local(controller, cart_root)
+    controller.location = CART_HANDLEBAR_CENTER_MM
+    controller.rotation_euler.z = math.pi / 2.0
     controller["Swivel"] = 0.0       # degrees; manually editable
-    controller["Tilt"] = 0.0         # degrees; 0–90 constrained
+    controller["Tilt"] = 45.0        # 45° presentation pose; 0–90 constrained
     controller["Plate_Roll"] = 0.0   # degrees around the pad long axis
-    controller["Explode"] = 1.0
-    controller["PartB_Insertion"] = 1.0
-    controller["BasePlate_Separation"] = 1.0
-    controller["Collar_Insertion"] = 1.0
+    controller["Explode"] = 0.0
+    controller["PartB_Insertion"] = 0.0
+    controller["BasePlate_Separation"] = 0.0
+    controller["Collar_Insertion"] = 0.0
     for key, (low, high, description) in {
-        "Swivel": (-360.0, 360.0, "Rotation about the Part A branch stem"),
-        "Tilt": (0.0, 90.0, "Pad tilt about Part B; limited to 0–90 degrees"),
+        "Swivel": (-45.0, 45.0, "Rest-pad lateral swivel about the handle mount; ±45 degrees"),
+        "Tilt": (0.0, 90.0, "Pad pitch; 45° presentation pose, mechanically limited to 0–90 degrees"),
         "Plate_Roll": (-45.0, 45.0, "Base plate and axle roll around pad long axis"),
         "Explode": (0.0, 1.0, "Manual exploded-state control"),
         "PartB_Insertion": (0.0, 1.0, "Part B axial exploded distance"),
@@ -1114,6 +1160,8 @@ def rig() -> dict[str, bpy.types.Object]:
     plate_axis = make_empty("Plate_Axis", "Rig",
                             (0.0, PAD_CENTER_Y, PLATE_AXIS_Z), "CIRCLE", 8.0)
     parent_local(plate_axis, swivel)
+    # Local pad long axis Y maps to world X, parallel to the handlebar.
+    plate_axis.rotation_euler.z = -math.pi / 2.0
     remember(plate_axis, "PlateAxis")
 
     # Tilt_Axis is nested under Swivel_Axis through Plate_Axis, so the Part B
@@ -1280,38 +1328,40 @@ def add_area_light(name: str, location, target, energy: float, size: float,
 
 
 def setup_camera_lights() -> dict[str, bpy.types.Object]:
-    """Set a warm cream studio, animated 50 mm camera, DOF target, and softboxes."""
+    """Set the cream studio, context-aware 35 mm camera, and broad softboxes."""
     scene = bpy.context.scene
-    backdrop = bevelled_box("Warm_Cream_Cyclorama", (1600.0, 1600.0, 2.0),
-                            (0.0, 20.0, -27.0), MATERIALS["Backdrop"],
+    backdrop = bevelled_box("Warm_Cream_Cyclorama", (4500.0, 4500.0, 2.0),
+                            (0.0, 0.0, -30.0), MATERIALS["Backdrop"],
                             "Stage", bevel=0.0)
     backdrop["Finish"] = "Palette cream plaster with subtle procedural noise"
 
-    camera_data = bpy.data.cameras.new("Studio_50mm_Camera_Data")
-    camera_data.lens = 50.0
+    camera_data = bpy.data.cameras.new("Studio_35mm_Camera_Data")
+    camera_data.lens = 35.0
     camera_data.sensor_width = 36.0
+    camera_data.clip_start = 1.0
+    camera_data.clip_end = 6000.0
     camera_data.dof.use_dof = True
-    camera_data.dof.aperture_fstop = 5.6
-    camera = bpy.data.objects.new("Studio_50mm_Camera", camera_data)
+    camera_data.dof.aperture_fstop = 8.0
+    camera = bpy.data.objects.new("Studio_35mm_Camera", camera_data)
     ensure_collection("Stage").objects.link(camera)
-    target = Vector((0.0, 35.0, 30.0))
-    camera.location = (380.0, -520.0, 360.0)
+    target = Vector((-35.0, 0.0, 555.0))
+    camera.location = (1700.0, -1700.0, 1200.0)
     aim_at(camera, target)
     scene.camera = camera
     remember(camera, "Camera")
 
-    focus = make_empty("Camera_Focus_Target", "Stage", (0.0, 0.0, 78.0), "SPHERE", 3.0)
+    focus = make_empty("Camera_Focus_Target", "Stage", (-35.0, 0.0, 555.0), "SPHERE", 3.0)
     camera_data.dof.focus_object = focus
     remember(focus, "FocusTarget")
 
     warm = LINEAR_PALETTE["BACKDROP"]
     cool = mix_rgba(LINEAR_PALETTE["SAGE"], LINEAR_PALETTE["BACKDROP"], 0.55)
-    add_area_light("Softbox_Key_Warm", (260.0, -260.0, 440.0), (0.0, 20.0, 60.0),
-                   750.0, 300.0, warm)
-    add_area_light("Softbox_Fill_Sage", (-320.0, -30.0, 230.0), (0.0, 30.0, 70.0),
-                   420.0, 360.0, cool)
-    add_area_light("Softbox_Rim_Warm", (120.0, 320.0, 360.0), (0.0, 45.0, 70.0),
-                   850.0, 260.0, warm)
+    add_area_light("Softbox_Key_Warm", (800.0, -1450.0, 2200.0), (-160.0, 0.0, 650.0),
+                   3400.0, 1250.0, warm)
+    add_area_light("Softbox_Fill_Sage", (-1450.0, -250.0, 1450.0), (-420.0, 0.0, 920.0),
+                   1800.0, 1100.0, cool)
+    add_area_light("Softbox_Rim_Warm", (250.0, 1450.0, 1900.0), (-150.0, 0.0, 820.0),
+                   3600.0, 1050.0, warm)
 
     # World background stays warm, soft, and palette-matched.
     world = bpy.data.worlds.get("World") or bpy.data.worlds.new("World")
@@ -1325,19 +1375,25 @@ def setup_camera_lights() -> dict[str, bpy.types.Object]:
     background.inputs["Strength"].default_value = 0.32
     world.node_tree.links.new(background.outputs["Background"], output.inputs["Surface"])
 
-    # Smooth camera push-in and 25° orbit; the focus empty moves to each active part.
-    orbit_keys = (
-        (1, -68.0, 960.0, 25.0),
-        (24, -68.0, 920.0, 25.0),
-        (96, -62.0, 810.0, 24.0),
-        (144, -56.0, 770.0, 23.5),
-        (192, -51.0, 750.0, 23.0),
-        (240, -47.0, 740.0, 22.5),
-        (276, -45.0, 735.0, 22.0),
-        (312, -43.0, 730.0, 22.0),
+    # Establish a clear wide-cart intro, smooth push to the below-handle
+    # attachment, detailed motion shots, then a steady hero close-up. Camera
+    # movement is eased and the old snap-bounce jitter is intentionally removed.
+    camera_poses = (
+        (1,   (-490.0, 0.0, 980.0), -50.0, 1300.0, 20.0),
+        (24,  (-35.0, 0.0, 430.0), -48.0, 2950.0, 15.0),
+        (48,  (-175.0, 0.0, 790.0), -52.0, 1750.0, 18.0),
+        (96,  (-490.0, 0.0, 990.0), -55.0, 930.0, 21.0),
+        (144, (-490.0, 0.0, 990.0), -52.0, 850.0, 22.0),
+        (168, (-490.0, 0.0, 980.0), -50.0, 790.0, 22.0),
+        (192, (-490.0, 0.0, 980.0), -50.0, 790.0, 22.0),
+        (216, (-490.0, 0.0, 965.0), -48.0, 790.0, 23.0),
+        (240, (-490.0, 0.0, 965.0), -48.0, 790.0, 23.0),
+        (258, (-490.0, 0.0, 975.0), -45.0, 730.0, 22.0),
+        (276, (-490.0, 0.0, 975.0), -45.0, 730.0, 22.0),
+        (312, (-490.0, 0.0, 965.0), -48.0, 900.0, 22.0),
     )
-    camera_target = Vector((0.0, 35.0, 30.0))
-    for frame, azimuth, distance, elevation in orbit_keys:
+    for frame, target_xyz, azimuth, distance, elevation in camera_poses:
+        camera_target = Vector(target_xyz)
         az = math.radians(azimuth)
         el = math.radians(elevation)
         horizontal = distance * math.cos(el)
@@ -1345,37 +1401,11 @@ def setup_camera_lights() -> dict[str, bpy.types.Object]:
                            camera_target.y + horizontal * math.sin(az),
                            camera_target.z + distance * math.sin(el))
         aim_at(camera, camera_target)
+        focus.location = camera_target
         key_object(camera, "location", frame)
         key_object(camera, "rotation_euler", frame)
-    # A tiny, quick positional bounce at the clamp snap (about 1.2 mm).
-    for frame, offset in ((112, 0.0), (114, 1.2), (116, -0.8), (118, 0.0)):
-        base_az = math.radians(-59.0)
-        d = 790.0
-        el = math.radians(24.0)
-        h = d * math.cos(el)
-        camera.location = (camera_target.x + h * math.cos(base_az),
-                           camera_target.y + h * math.sin(base_az),
-                           camera_target.z + d * math.sin(el) + offset)
-        aim_at(camera, camera_target)
-        key_object(camera, "location", frame)
-        key_object(camera, "rotation_euler", frame)
-    tune_action(camera)
-
-    focus_positions = (
-        (1, (0.0, 0.0, 22.0)),
-        (24, (0.0, 0.0, 22.0)),
-        (55, (-38.0, 0.0, 76.0)),
-        (96, (0.0, 0.0, 78.0)),
-        (120, (0.0, 0.0, 24.0)),
-        (144, (0.0, 0.0, 24.0)),
-        (168, (0.0, 54.0, 84.0)),
-        (216, (-38.0, 0.0, 77.0)),
-        (258, (-38.0, 0.0, 72.0)),
-        (312, (0.0, 55.0, 85.0)),
-    )
-    for frame, point in focus_positions:
-        focus.location = point
         key_object(focus, "location", frame)
+    tune_action(camera)
     tune_action(focus)
     return {"camera": camera, "focus": focus, "backdrop": backdrop}
 
@@ -1385,7 +1415,7 @@ def arc_arrow(name: str, center, radius: float, plane: str,
               material: bpy.types.Material, collection_name: str,
               parent: bpy.types.Object | None = None) -> bpy.types.Object:
     points = []
-    start, end = math.radians(-45.0), math.radians(225.0)
+    start, end = math.radians(-55.0), math.radians(55.0)
     steps = 48
     for i in range(steps + 1):
         t = start + (end - start) * i / steps
@@ -1507,7 +1537,8 @@ def key_scale(obj: bpy.types.Object, frame: int, value: float) -> None:
 
 
 def animate(rig_objects: dict[str, bpy.types.Object],
-            arrow_objects: dict[str, object]) -> None:
+            arrow_objects: dict[str, object],
+            cart_root: bpy.types.Object) -> None:
     scene = bpy.context.scene
     controller = rig_objects["controller"]
     part_a_root = rig_objects["part_a_root"]
@@ -1516,28 +1547,45 @@ def animate(rig_objects: dict[str, bpy.types.Object],
 
     for name, (start, end) in TIMING.items():
         scene.timeline_markers.new(name.title().replace("_", " "), frame=start)
+    scene.timeline_markers.new("Cart sway cycle", frame=1)
     scene.timeline_markers.new("Hero end", frame=FRAME_END)
+
+    # The cart makes a gentle left/right steering sweep while the attachment
+    # pivots like a pedal. Translation is small enough to stay on the floor.
+    cart_sway_keys = ((1, 0.0, 0.0), (40, CART_SWAY_MM, CART_SWAY_YAW_DEG),
+                      (79, 0.0, 0.0), (118, -CART_SWAY_MM, -CART_SWAY_YAW_DEG),
+                      (157, 0.0, 0.0), (196, CART_SWAY_MM, CART_SWAY_YAW_DEG),
+                      (235, 0.0, 0.0), (274, -CART_SWAY_MM, -CART_SWAY_YAW_DEG),
+                      (312, 0.0, 0.0))
+    for frame, lateral_mm, yaw_deg in cart_sway_keys:
+        cart_root.location.y = lateral_mm
+        cart_root.rotation_euler.z = math.radians(yaw_deg)
+        key_component(cart_root, "location", 1, frame)
+        key_component(cart_root, "rotation_euler", 2, frame)
+    tune_action(cart_root)
 
     # Controller properties exist for direct/manual posing; drivers route them
     # to the axes and explode offsets. Independent insertion controls stage order.
     property_tracks = {
-        "Explode": ((1, 1.0), (24, 0.75), (40, 0.4), (52, 0.0), (96, 0.0), (312, 0.0)),
-        "PartB_Insertion": ((1, 1.0), (25, 1.0), (38, 0.7), (47, 0.15),
-                            (50, -0.04), (52, 0.0), (312, 0.0)),
-        "BasePlate_Separation": ((1, 1.0), (25, 0.8), (57, 0.25),
-                                 (64, -0.04), (68, 0.0), (312, 0.0)),
-        "Collar_Insertion": ((1, 1.0), (25, 1.0), (67, 0.75), (82, 0.1),
-                             (84, -0.04), (86, 0.04), (88, 0.0), (312, 0.0)),
+        "Explode": ((1, 0.0), (24, 0.0), (34, 0.8), (40, 1.0),
+                    (52, 0.35), (64, 0.0), (96, 0.0), (312, 0.0)),
+        "PartB_Insertion": ((1, 0.0), (24, 0.0), (34, 1.0), (42, 0.65),
+                            (52, 0.15), (58, 0.0), (312, 0.0)),
+        "BasePlate_Separation": ((1, 0.0), (24, 0.0), (36, 1.0),
+                                 (48, 0.45), (60, 0.0), (312, 0.0)),
+        "Collar_Insertion": ((1, 0.0), (24, 0.0), (40, 1.0), (56, 0.6),
+                             (72, 0.0), (96, 0.0), (312, 0.0)),
         "Swivel": ((1, 0.0), (144, 0.0)),
-        "Tilt": ((1, 0.0), (192, 0.0)),
-        "Plate_Roll": ((1, 0.0), (192, 0.0)),
+        "Tilt": ((1, 45.0), (192, 45.0)),
+        "Plate_Roll": ((1, 0.0), (312, 0.0)),
     }
     for prop, keys in property_tracks.items():
         for frame, value in keys:
             key_property(controller, prop, frame, value)
 
-    # Part A stays just clear of the bar until its snap-on stage.
-    part_a_root.location.y = 32.0
+    # Start with Part A mounted below the handle; the clamp-snap stage briefly
+    # pulls it clear, flexes the lips, and seats it without an initial misalignment.
+    part_a_root.location.y = 0.0
     key_component(part_a_root, "location", 1, 1)
     key_component(part_a_root, "location", 1, 96)
     part_a_root.location.y = 32.0
@@ -1566,28 +1614,33 @@ def animate(rig_objects: dict[str, bpy.types.Object],
         bore.value = value
         bore.keyframe_insert(data_path="value", frame=frame)
 
-    # Swivel uses 15° detent stops on the outbound and return swing.
-    swivel_keys = [(145, 0.0)]
-    outbound_start, outbound_end = 145, 168
-    for i in range(1, 13):
-        frame = round(outbound_start + (outbound_end - outbound_start) * i / 12.0)
-        angle = i * 15.0
-        swivel_keys.append((frame, angle))
-        if frame + 1 < 192:
-            swivel_keys.append((frame + 1, angle))  # short detent dwell
-    for i in range(1, 13):
-        frame = round(169 + (192 - 169) * i / 12.0)
-        angle = 180.0 - i * 15.0
-        swivel_keys.append((frame, angle))
-    for frame, value in sorted(set(swivel_keys)):
+    # The pad is pitched 45° below the handle at rest. Its swivel sweeps
+    # side-to-side like a pedal, pausing at 15° detents on both ±45° ends.
+    swivel_keys = (
+        (145, 0.0),
+        (148, 15.0), (149, 15.0),
+        (152, 30.0), (153, 30.0),
+        (156, 45.0), (158, 45.0),
+        (161, 30.0), (162, 30.0),
+        (164, 15.0), (165, 15.0),
+        (168, 0.0), (169, 0.0),
+        (172, -15.0), (173, -15.0),
+        (176, -30.0), (177, -30.0),
+        (180, -45.0), (182, -45.0),
+        (185, -30.0), (186, -30.0),
+        (189, -15.0), (190, -15.0),
+        (192, 0.0),
+    )
+    for frame, value in swivel_keys:
         key_property(controller, "Swivel", frame, value)
 
-    # Tilt and long-axis plate roll demonstrate the two independent axes.
-    for frame, value in ((193, 0.0), (204, 35.0), (216, 90.0),
-                         (228, 50.0), (240, 0.0), (312, 0.0)):
+    # Demonstrate a restrained tilt adjustment around the requested 45° pose;
+    # the rig itself remains mechanically limited to the full 0–90° range.
+    for frame, value in ((193, 45.0), (204, 58.0), (216, 72.0),
+                         (228, 58.0), (240, 45.0), (312, 45.0)):
         key_property(controller, "Tilt", frame, value)
-    for frame, value in ((193, 0.0), (207, 10.0), (221, 0.0), (240, 0.0), (312, 0.0)):
-        key_property(controller, "Plate_Roll", frame, value)
+    for frame in (193, 240, 312):
+        key_property(controller, "Plate_Roll", frame, 0.0)
 
     # Slider makes a 6 mm press; the lever rotation is driven 12° by SliderRoot X.
     for frame, value in ((241, 0.0), (248, 0.0), (250, 6.0),
@@ -1595,9 +1648,9 @@ def animate(rig_objects: dict[str, bpy.types.Object],
         slider_root.location.x = value
         key_component(slider_root, "location", 0, frame)
 
-    # A small 15° release-and-relock motion remains as the locked hero angle.
+    # Short latch demonstration: release to a 15° detent, then re-center and lock.
     for frame, value in ((241, 0.0), (249, 0.0), (251, 15.0),
-                         (257, 15.0), (262, 15.0), (276, 15.0), (312, 15.0)):
+                         (257, 15.0), (262, 0.0), (276, 0.0), (312, 0.0)):
         key_property(controller, "Swivel", frame, value)
 
     # Use Bezier easing throughout, except the slider's crisp spring-return click.
@@ -1658,7 +1711,7 @@ def animate(rig_objects: dict[str, bpy.types.Object],
             key_scale(obj, frame, value)
         tune_action(obj)
 
-    # Camera focus/pose and subtle snap bounce are keyed by setup_camera_lights().
+    # Camera focus and the animated context-cart path are keyed above.
     scene.frame_start = FRAME_START
     scene.frame_end = FRAME_END
     scene.render.fps = FPS
@@ -1714,6 +1767,23 @@ def render_setup() -> None:
     scene["Design Status"] = "Parametric visual concept; dimensions/fit/load safety not validated"
 
 
+def configure_startup_view() -> None:
+    """Open in the camera at frame 1 with materials visible, not a blank viewport."""
+    for screen in bpy.data.screens:
+        for area in screen.areas:
+            if area.type != "VIEW_3D":
+                continue
+            space = area.spaces.active
+            try:
+                space.region_3d.view_perspective = "CAMERA"
+                space.overlay.show_overlays = False
+                space.shading.type = "MATERIAL"
+                space.shading.use_scene_lights = True
+                space.shading.use_scene_world = True
+            except (AttributeError, TypeError, RuntimeError):
+                continue
+
+
 def clear_scene() -> None:
     # Remove startup objects and project collections without touching other files.
     bpy.ops.object.select_all(action="SELECT")
@@ -1733,7 +1803,7 @@ def clear_scene() -> None:
 
 
 def organize_collections() -> None:
-    for name in ("PartA_Clamp", "PartB_Axle", "Pad_Body", "Pad_BasePlate",
+    for name in ("Cart_Context", "PartA_Clamp", "PartB_Axle", "Pad_Body", "Pad_BasePlate",
                  "Latch_Assembly", "Handlebar", "Rig", "Arrows_Labels", "Stage"):
         ensure_collection(name)
 
@@ -1747,6 +1817,7 @@ def main() -> None:
     scene.render.resolution_percentage = 100
     organize_collections()
     make_materials()
+    cart_context = make_cart_context()
 
     clamp_parts = make_clamp()
     handlebar = make_handlebar()
@@ -1754,16 +1825,19 @@ def main() -> None:
     pad_parts = make_pad()
     base_parts = make_baseplate()
     latch_parts = make_latch()
-    rig_objects = rig()
+    rig_objects = rig(cart_context["root"])
+    parent_local(handlebar, rig_objects["controller"])
+    handlebar.location = (0.0, 0.0, 0.0)
     stage = setup_camera_lights()
     arrows = make_arrows_labels(stage["camera"])
-    animate(rig_objects, arrows)
+    animate(rig_objects, arrows, cart_context["root"])
     render_setup()
+    configure_startup_view()
 
     # Product mesh transforms are applied; a small allowlist uses scale as the
     # intentionally animated reveal control requested for arrows, labels and pulse.
     animated_scale_prefixes = ("Swivel_Arrow_", "Tilt_Arrow_", "PART_A_", "PART_B_")
-    intentional_scale_names = {"Latch_Click_Pulse_Ring"}
+    intentional_scale_names = {"Latch_Click_Pulse_Ring", "Shopping_Cart_Context"}
     bad_scales = [obj.name for obj in bpy.data.objects
                   if obj.type not in {"CAMERA", "LIGHT", "EMPTY"}
                   and not obj.name.startswith(animated_scale_prefixes)
@@ -1777,8 +1851,12 @@ def main() -> None:
     scene["Built with Blender"] = bpy.app.version_string
     scene["Handlebar assumption"] = f"Ø{HANDLEBAR_DIAMETER_MM:.0f} mm; user-specified assumption"
     scene["Clamp fit note"] = "OD28 with nominal 3 mm wall yields ID22; the visual snap key expands the bore for the assumed Ø25 bar. Verify/engineer before prototyping."
-    scene["Part A"] = "One central snap C-clamp + 90° branch + windowed rib collar"
+    scene["Part A"] = "One central snap C-clamp + downward 90° branch + windowed rib collar"
     scene["Part B"] = "Ø18 × 100 mm slotted pivot axle with latch pin"
+    scene["Intended use"] = "Cart-mounted cushioned leaning support; not a seat"
+    scene["Cart context source"] = "Copied Shopping Cart mesh from blender/source/hcd mockup.blend; original untouched"
+    scene["Cart motion"] = "Smooth lateral steering sway with small yaw; two side-to-side cycles"
+    scene["Rest-pad orientation"] = "Mounted below the handle; default 45° tilt with pedal-like ±45° lateral swivel"
     scene["Palette"] = "F2EFE9 cream · 3A4C40 forest · 8BA892 sage · C4694A terracotta"
     scene["Export note"] = "No animation render is started unless RENDER=True"
 
@@ -1787,7 +1865,7 @@ def main() -> None:
     bpy.ops.wm.save_as_mainfile(filepath=str(OUTPUT_BLEND))
     print(f"Saved animated Blender model: {OUTPUT_BLEND}")
     print("Ready at frame 1. Press Spacebar to play; Render > Render Animation to export H.264.")
-    print(f"Camera: 50 mm, {scene.render.resolution_x} × {scene.render.resolution_y}; "
+    print(f"Camera: 35 mm, {scene.render.resolution_x} × {scene.render.resolution_y}; "
           f"Cycles {scene.cycles.samples} samples; denoising enabled; render flag={RENDER}")
     if RENDER:
         bpy.ops.render.render(animation=True)
