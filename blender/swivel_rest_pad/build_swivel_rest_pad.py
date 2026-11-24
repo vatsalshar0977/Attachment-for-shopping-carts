@@ -5,8 +5,9 @@ Run from the repository with Blender 4.5.x:
     blender --background --python blender/swivel_rest_pad/build_swivel_rest_pad.py
 
 The builder copies only the Shopping Cart context mesh from
-blender/source/hcd mockup.blend; that source project is never edited. All
-attachment dimensions are millimeters. RENDER stays False by default.
+blender/source/hcd mockup.blend; that source project is never edited. The
+packed grocery-aisle plate is loaded from blender/swivel_rest_pad/assets.
+All attachment dimensions are millimeters. RENDER stays False by default.
 """
 
 from __future__ import annotations
@@ -50,12 +51,7 @@ PAD_LENGTH_MM = 280.0              # cushion length, parallel to the cart handle
 PAD_WIDTH_MM = 160.0               # vertical cushion height in the upright backrest pose
 PAD_THICKNESS_MM = 35.0
 PAD_CROWN_HEIGHT_MM = 4.0
-HUMAN_REST_TILT_DEGREES = 12.0      # forward pitch shared by the torso and cushion
-HUMAN_LEAN_FORWARD_MM = 56.0        # torso advance at the lower end of the contact zone
-HUMAN_CONTACT_ADVANCE_MM = 2.5       # tiny visual overlap avoids a distracting contact gap
-HUMAN_UPPER_BODY_ADVANCE_MM = 90.0   # shoulder/head lean relative to the planted legs
-HUMAN_CONTACT_REFERENCE_Z_MM = -32.0  # contact reference below the mount's hinge axis
-HUMAN_LOWER_TORSO_Z_MM = 650.0
+NEUTRAL_TILT_DEGREES = 12.0       # forward resting pitch of the cushion
 BASE_PLATE_THICKNESS_MM = 3.0
 BASE_PLATE_CENTER_Z_MM = -(PAD_THICKNESS_MM * 0.5 + BASE_PLATE_THICKNESS_MM * 0.5)
 PART_B_DIAMETER_MM = 18.0
@@ -80,7 +76,7 @@ TIMING = {
 }
 FRAME_START = 1
 FRAME_END = 312
-STARTUP_FRAME = 24  # full cart-and-person comparison when the file opens
+STARTUP_FRAME = 1  # close product hero view when the file opens
 
 # The cart mesh is copied and measured at build time. The center of its actual
 # handlebar island drives the mount location; the source project stays untouched.
@@ -102,6 +98,7 @@ PAD_STEM_CENTER_Z_MM = (PAD_STEM_TOP_Z_MM + PAD_STEM_BOTTOM_Z_MM) * 0.5
 
 PROJECT_DIR = Path(__file__).resolve().parent
 CART_REFERENCE_BLEND = PROJECT_DIR.parent / "source" / "hcd mockup.blend"
+GROCERY_BACKGROUND_IMAGE = PROJECT_DIR / "assets" / "grocery_aisle_background.png"
 OUTPUT_BLEND = PROJECT_DIR / "swivel_pad_animated.blend"
 
 COLLECTIONS: dict[str, bpy.types.Collection] = {}
@@ -541,10 +538,7 @@ def make_materials() -> dict[str, bpy.types.Material]:
     terra = LINEAR_PALETTE["TERRACOTTA"]
     warm_aluminum = mix_rgba(sage, cream, 0.78)
     pale_sage = mix_rgba(cream, sage, 0.25)
-    cart_tint = mix_rgba(cream, sage, 0.38)
-    human_clothing = mix_rgba(body, sage, 0.46)
-    human_pants = mix_rgba(body, sage, 0.27)
-    human_skin = mix_rgba(cream, terra, 0.32)
+    cart_tint = mix_rgba(body, sage, 0.62)
     dark_body = scale_rgba(body, 0.90)
 
     mats = {
@@ -556,40 +550,15 @@ def make_materials() -> dict[str, bpy.types.Material]:
         "Sage": principled_material("Sage motion graphic", sage, 0.78, 0.0),
         "SagePanel": principled_material("Sage hatch panel · 25% tint", pale_sage, 0.82, 0.0),
         "Label": principled_material("Forest labels", body, 0.64, 0.0),
-        "Backdrop": principled_material("Cream plaster backdrop", cream, 0.92, 0.0),
-        "CartContext": principled_material("Cart context · pale palette sage", cart_tint, 0.72, 0.0),
-        "HumanClothing": principled_material("Scale figure · palette forest clothing", human_clothing, 0.82, 0.0),
-        "HumanPants": principled_material("Scale figure · darker forest trousers", human_pants, 0.82, 0.0),
-        "HumanSkin": principled_material("Scale figure · warm palette skin tint", human_skin, 0.78, 0.0),
+        "CartContext": principled_material("Cart context · satin sage metal", cart_tint, 0.38, 0.58),
     }
     # Fine procedural grain stays subtle and all tints remain palette-derived.
     add_noise_bump(mats["Pad"], 185.0, 0.07, 0.11)
     add_noise_bump(mats["Aluminum"], 270.0, 0.035, 0.08)
-    add_noise_bump(mats["Backdrop"], 85.0, 0.035, 0.45)
     metal_shader = next(node for node in mats["Aluminum"].node_tree.nodes
                         if node.type == "BSDF_PRINCIPLED")
     set_socket(metal_shader, ("Anisotropic", "Anisotropic IOR Level"), 0.32)
     set_socket(metal_shader, ("Anisotropic Rotation",), 0.18)
-
-    # Subtle cream-to-cream cyclorama gradient; the same four palette colors
-    # remain the only color sources, with the darker stop derived from cream.
-    backdrop_shader = next(node for node in mats["Backdrop"].node_tree.nodes
-                           if node.type == "BSDF_PRINCIPLED")
-    texcoord = mats["Backdrop"].node_tree.nodes.new("ShaderNodeTexCoord")
-    separate = mats["Backdrop"].node_tree.nodes.new("ShaderNodeSeparateXYZ")
-    map_range = mats["Backdrop"].node_tree.nodes.new("ShaderNodeMapRange")
-    ramp = mats["Backdrop"].node_tree.nodes.new("ShaderNodeValToRGB")
-    links = mats["Backdrop"].node_tree.links
-    links.new(texcoord.outputs["Object"], separate.inputs["Vector"])
-    map_range.inputs["From Min"].default_value = -450.0
-    map_range.inputs["From Max"].default_value = 450.0
-    map_range.inputs["To Min"].default_value = 0.0
-    map_range.inputs["To Max"].default_value = 1.0
-    links.new(separate.outputs["Y"], map_range.inputs["Value"])
-    ramp.color_ramp.elements[0].color = scale_rgba(cream, 0.94)
-    ramp.color_ramp.elements[1].color = cream
-    links.new(map_range.outputs["Result"], ramp.inputs["Fac"])
-    links.new(ramp.outputs["Color"], backdrop_shader.inputs["Base Color"])
 
     gradient_c = make_gradient_material("Interior gradient · clamp bore", "X", -55.0, 55.0)
     gradient_b = make_gradient_material("Interior gradient · axle strip", "Z", -32.0, -4.0)
@@ -712,183 +681,6 @@ def make_cart_context() -> dict[str, object]:
     cart_root["Motion"] = "Stationary cart reference; only the attachment pivots"
     cart_root["Context only"] = True
     return {"root": cart_root, "cart": cart, "handle": handle}
-
-
-def add_human_limb(name: str, start, end, radius: float,
-                   material: bpy.types.Material, root: bpy.types.Object) -> bpy.types.Object:
-    """Create one rounded scale-figure limb segment in millimeter coordinates."""
-    a, b = Vector(start), Vector(end)
-    direction = b - a
-    segment = cylinder(name, radius, direction.length, (a + b) * 0.5,
-                       material, "Human_Context", axis=direction,
-                       bevel=min(8.0, radius * 0.22), vertices=32)
-    parent_local(segment, root)
-    return segment
-
-
-def add_human_joint(name: str, location, radius: float,
-                    material: bpy.types.Material, root: bpy.types.Object,
-                    scale=(1.0, 1.0, 1.0)) -> bpy.types.Object:
-    joint = sphere(name, radius, location, material, "Human_Context", scale=scale)
-    parent_local(joint, root)
-    return joint
-
-
-def smooth_step01(value: float) -> float:
-    """Cubic ease with zero slope at both ends for a smooth pose transition."""
-    value = max(0.0, min(1.0, value))
-    return value * value * (3.0 - 2.0 * value)
-
-
-def human_forward_advance(height: float, hinge_z: float) -> float:
-    """Lean the torso into a cushion whose neutral pitch matches its contact face."""
-    angle = math.radians(HUMAN_REST_TILT_DEGREES)
-    contact_z = hinge_z + HUMAN_CONTACT_REFERENCE_Z_MM
-    cushion_face_depth_at_edge = (PAD_CENTER_FROM_TILT_Z + PAD_THICKNESS_MM * 0.5
-                                  - PAD_CROWN_HEIGHT_MM)
-    cushion_top_z = (hinge_z + PAD_WIDTH_MM * 0.5 * math.cos(angle)
-                    + cushion_face_depth_at_edge * math.sin(angle))
-    contact_advance = HUMAN_LEAN_FORWARD_MM + HUMAN_CONTACT_ADVANCE_MM
-    top_advance = contact_advance + math.tan(angle) * (cushion_top_z - contact_z)
-
-    if height <= contact_z:
-        t = (height - HUMAN_LOWER_TORSO_Z_MM) / (contact_z - HUMAN_LOWER_TORSO_Z_MM)
-        return contact_advance * smooth_step01(t)
-    if height <= cushion_top_z:
-        return contact_advance + math.tan(angle) * (height - contact_z)
-
-    upper_lean_height = 1385.0
-    t = (height - cushion_top_z) / (upper_lean_height - cushion_top_z)
-    return top_advance + (HUMAN_UPPER_BODY_ADVANCE_MM - top_advance) * smooth_step01(t)
-
-
-def make_human_torso(root: bpy.types.Object, handle_center, material) -> bpy.types.Object:
-    """Make a continuous, forward-leaning torso whose chest meets the cushion."""
-    hx, hy, hz = Vector(handle_center)
-    hinge_z = hz + BRANCH_TIP_Z + PLATE_AXIS_Z
-    # (height from floor, center-x offset from handle, fore-aft radius, half-width)
-    sections = (
-        (650.0, -270.0, 82.0, 105.0),
-        (710.0, -260.0, 112.0, 132.0),
-        (790.0, -255.0, 140.0, 160.0),
-        (875.0, -250.0, 158.0, 180.0),
-        (960.0, -242.0, 162.0, 192.0),
-        (1050.0, -236.0, 156.0, 202.0),
-        (1150.0, -232.0, 152.0, 207.0),
-        (1240.0, -230.0, 145.0, 197.0),
-        (1320.0, -220.0, 132.0, 177.0),
-        (1385.0, -205.0, 88.0, 125.0),
-    )
-    segments = 48
-    cross_section_exponent = 4.0
-    cross_section_power = 2.0 / cross_section_exponent
-    vertices = []
-    faces = []
-    for height, x_offset, radius_x, radius_y in sections:
-        center_x = hx + x_offset + human_forward_advance(height, hinge_z)
-        for index in range(segments):
-            angle = math.tau * index / segments
-            cos_a, sin_a = math.cos(angle), math.sin(angle)
-            front_flat_x = math.copysign(abs(cos_a) ** cross_section_power, cos_a)
-            side_flat_y = math.copysign(abs(sin_a) ** cross_section_power, sin_a)
-            vertices.append((center_x + radius_x * front_flat_x,
-                             hy + radius_y * side_flat_y, height))
-    faces.append(tuple(reversed(range(segments))))
-    for ring in range(len(sections) - 1):
-        lower = ring * segments
-        upper = (ring + 1) * segments
-        for index in range(segments):
-            following = (index + 1) % segments
-            faces.append((lower + index, lower + following,
-                          upper + following, upper + index))
-    top = (len(sections) - 1) * segments
-    faces.append(tuple(top + index for index in range(segments)))
-    torso = mesh_object("ScaleFigure_Torso_Continuous", vertices, faces,
-                        "Human_Context", material)
-    set_smooth(torso)
-    torso["Pose note"] = "Continuous forward lean; chest profile follows the cushion's 12° resting pitch"
-    parent_local(torso, root)
-    return torso
-
-
-def make_human_scale_figure(cart_root: bpy.types.Object,
-                             handle_center_mm) -> bpy.types.Object:
-    """Add a stylized 1700 mm standing adult for visual proportion context."""
-    handle = Vector(handle_center_mm)
-    hx, hy, hz = handle
-    root = make_empty("Human_Scale_Figure_1700mm", "Human_Context",
-                      (0.0, 0.0, 0.0), "PLAIN_AXES", 35.0)
-    parent_local(root, cart_root)
-    hinge_z = hz + BRANCH_TIP_Z + PLATE_AXIS_Z
-    root["Reference height mm"] = 1700.0
-    root["Pose"] = "Standing behind the cart; torso leans into the 12° rest cushion while hands stay on the handle"
-    root["Not validated"] = "Stylized visual scale only; not ergonomic, fit, or safety validation"
-    clothing = MATERIALS["HumanClothing"]
-    pants = MATERIALS["HumanPants"]
-    skin = MATERIALS["HumanSkin"]
-
-    # The upper torso advances from the planted legs and follows the cushion's resting pitch.
-    make_human_torso(root, handle, clothing)
-    head_z = hz + 478.0
-    head_advance = human_forward_advance(head_z, hinge_z)
-    head_center = (hx - 190.0 + head_advance, hy, head_z)
-    head = sphere("ScaleFigure_Head", 1.0, head_center, skin,
-                  "Human_Context", scale=(74.0, 82.0, 130.0))
-    parent_local(head, root)
-    neck_z = hz + 350.0
-    neck_advance = human_forward_advance(neck_z, hinge_z)
-    neck = cylinder("ScaleFigure_Neck", 40.0, 130.0,
-                    (hx - 190.0 + neck_advance, hy, neck_z), skin, "Human_Context",
-                    axis=Vector((0.0, 0.0, 1.0)), bevel=14.0, vertices=32)
-    parent_local(neck, root)
-    nose = sphere("ScaleFigure_Nose", 1.0,
-                  (hx - 99.0 + head_advance, hy, head_z), skin,
-                  "Human_Context", scale=(18.0, 15.0, 12.0))
-    parent_local(nose, root)
-    hair_z = hz + 558.0
-    hair_advance = human_forward_advance(hair_z, hinge_z)
-    hair = sphere("ScaleFigure_Hair_Cap", 1.0,
-                  (hx - 190.0 + hair_advance, hy, hair_z), pants,
-                  "Human_Context", scale=(70.0, 80.0, 42.0))
-    parent_local(hair, root)
-
-    # Arms reach forward from the leaning shoulders to the fixed cart handle.
-    for side in (-1.0, 1.0):
-        shoulder_z = hz + 233.0
-        shoulder_advance = human_forward_advance(shoulder_z, hinge_z)
-        shoulder = (hx - 151.0 + shoulder_advance,
-                    hy + side * 165.0, shoulder_z)
-        elbow = (hx - 46.0, hy + side * 225.0, hz + 118.0)
-        wrist = (hx - 6.0, hy + side * 180.0, hz + 23.0)
-        hand = (hx + 4.0, hy + side * 166.0, hz - 2.0)
-        suffix = "L" if side < 0 else "R"
-        add_human_limb(f"ScaleFigure_UpperArm_{suffix}",
-                       shoulder, elbow, 39.0, clothing, root)
-        add_human_limb(f"ScaleFigure_Forearm_{suffix}",
-                       elbow, wrist, 32.0, clothing, root)
-        add_human_joint(f"ScaleFigure_Elbow_{suffix}", elbow, 32.0,
-                        clothing, root)
-        add_human_joint(f"ScaleFigure_Hand_{suffix}", hand, 1.0,
-                        skin, root, scale=(32.0, 38.0, 22.0))
-
-    # Two legs and forward-facing shoes give a floor-to-head scale silhouette.
-    for side in (-1.0, 1.0):
-        suffix = "L" if side < 0 else "R"
-        hip = (hx - 261.0, hy + side * 105.0, 840.0)
-        knee = (hx - 276.0, hy + side * 112.0, 450.0)
-        ankle = (hx - 251.0, hy + side * 118.0, 88.0)
-        add_human_limb(f"ScaleFigure_Thigh_{suffix}",
-                       hip, knee, 55.0, pants, root)
-        add_human_limb(f"ScaleFigure_Shin_{suffix}",
-                       knee, ankle, 43.0, pants, root)
-        add_human_joint(f"ScaleFigure_Knee_{suffix}", knee, 46.0,
-                        pants, root)
-        foot = bevelled_box(f"ScaleFigure_Shoe_{suffix}",
-                            (220.0, 92.0, 68.0),
-                            (hx - 156.0, hy + side * 118.0, 36.0),
-                            pants, "Human_Context", bevel=14.0)
-        parent_local(foot, root)
-    return root
 
 
 # ── Main C-profile clamp and Part A T-connector ───────────────────────────────
@@ -1411,7 +1203,7 @@ def rig(cart_root: bpy.types.Object,
     controller.rotation_quaternion = Vector((1.0, 0.0, 0.0)).rotation_difference(
         Vector(handle["axis"]).normalized())
     controller["Swivel"] = 0.0       # degrees; manually editable
-    controller["Tilt"] = HUMAN_REST_TILT_DEGREES  # match the shopper's forward torso lean
+    controller["Tilt"] = NEUTRAL_TILT_DEGREES  # neutral cushion rest pitch
     controller["Plate_Roll"] = 0.0   # degrees around the upright cushion's face normal
     controller["Explode"] = 0.0
     controller["PartB_Insertion"] = 0.0
@@ -1419,7 +1211,7 @@ def rig(cart_root: bpy.types.Object,
     controller["Collar_Insertion"] = 0.0
     for key, (low, high, description) in {
         "Swivel": (-45.0, 45.0, "Rest-pad lateral swivel about the handle mount; ±45 degrees"),
-        "Tilt": (0.0, 90.0, "Forward lean of the upright cushion; neutral 12° matches the shopper's torso"),
+        "Tilt": (0.0, 90.0, "Forward lean of the upright cushion; neutral rest angle is 12°"),
         "Plate_Roll": (-45.0, 45.0, "Roll upright backing plate around the user-facing normal"),
         "Explode": (0.0, 1.0, "Manual exploded-state control"),
         "PartB_Insertion": (0.0, 1.0, "Part B axial exploded distance"),
@@ -1441,7 +1233,7 @@ def rig(cart_root: bpy.types.Object,
     parent_local(swivel, part_a_root)
     remember(swivel, "SwivelAxis")
 
-    # Stand the baseplate in the human-facing plane: local X follows the
+    # Stand the baseplate in the customer-facing plane: local X follows the
     # handlebar, local Y is vertical, and local Z points toward the shopper.
     plate_axis = make_empty("Plate_Axis", "Rig",
                             (0.0, PAD_CENTER_Y, PLATE_AXIS_Z), "CIRCLE", 8.0)
@@ -1461,7 +1253,7 @@ def rig(cart_root: bpy.types.Object,
     parent_local(pad_frame, tilt)
     remember(pad_frame, "PadFrame")
 
-    # The latch uses a local frame aligned to the Part B slot on the human-facing side.
+    # The latch uses a local frame aligned to the Part B slot on the customer-facing side.
     latch_frame = make_empty("Latch_Assembly_Frame", "Rig", (0.0, 0.0, 0.0),
                              "PLAIN_AXES", 4.0)
     parent_local(latch_frame, pad_frame)
@@ -1612,7 +1404,7 @@ def rig(cart_root: bpy.types.Object,
             "lever_root": lever_root, "slider_root": slider_root}
 
 
-# ── Studio camera, warm world, cyclorama, and softboxes ───────────────────────
+# ── Grocery-aisle camera, lighting, and softbox setup ────────────────────────
 def aim_at(obj: bpy.types.Object, target: Vector) -> None:
     obj.rotation_euler = (target - obj.location).to_track_quat("-Z", "Y").to_euler()
 
@@ -1632,24 +1424,150 @@ def add_area_light(name: str, location, target, energy: float, size: float,
     return obj
 
 
+def add_camera_background_plate(camera: bpy.types.Object) -> bpy.types.Object:
+    """Add a packed, camera-following grocery-aisle photo as a soft background plate."""
+    if not GROCERY_BACKGROUND_IMAGE.is_file():
+        raise FileNotFoundError(f"Grocery background image not found: {GROCERY_BACKGROUND_IMAGE}")
+    image = bpy.data.images.load(str(GROCERY_BACKGROUND_IMAGE), check_existing=True)
+    if not getattr(image, "packed_file", None):
+        image.pack()
+    aspect = 16.0 / 9.0
+    image_aspect = image.size[0] / image.size[1]
+    distance = 5000.0
+    width = distance * camera.data.sensor_width / camera.data.lens * 1.08
+    height = width / aspect
+    if image_aspect > aspect:
+        horizontal_crop = 0.5 * (1.0 - aspect / image_aspect)
+        uv_left, uv_right = horizontal_crop, 1.0 - horizontal_crop
+        uv_bottom, uv_top = 0.0, 1.0
+    else:
+        vertical_crop = 0.5 * (1.0 - image_aspect / aspect)
+        uv_left, uv_right = 0.0, 1.0
+        uv_bottom, uv_top = vertical_crop, 1.0 - vertical_crop
+    mesh = bpy.data.meshes.new("Grocery_Aisle_Backplate_Mesh")
+    mesh.from_pydata(((-width * 0.5, -height * 0.5, 0.0),
+                      ( width * 0.5, -height * 0.5, 0.0),
+                      ( width * 0.5,  height * 0.5, 0.0),
+                      (-width * 0.5,  height * 0.5, 0.0)), [], ((0, 1, 2, 3),))
+    mesh.update()
+    uv_layer = mesh.uv_layers.new(name="Aisle_Image_UV")
+    for loop_index, uv in zip(mesh.polygons[0].loop_indices,
+                              ((uv_left, uv_bottom), (uv_right, uv_bottom),
+                               (uv_right, uv_top), (uv_left, uv_top))):
+        uv_layer.data[loop_index].uv = uv
+
+    material = bpy.data.materials.new("Photographic grocery aisle · camera only")
+    material.use_nodes = True
+    nodes = material.node_tree.nodes
+    nodes.clear()
+    links = material.node_tree.links
+    output = nodes.new("ShaderNodeOutputMaterial")
+    texcoord = nodes.new("ShaderNodeTexCoord")
+    texture = nodes.new("ShaderNodeTexImage")
+    texture.image = image
+    texture.interpolation = "Linear"
+    texture.extension = "EXTEND"
+    links.new(texcoord.outputs["UV"], texture.inputs["Vector"])
+    emission = nodes.new("ShaderNodeEmission")
+    emission.inputs["Strength"].default_value = 0.90
+    links.new(texture.outputs["Color"], emission.inputs["Color"])
+    transparent = nodes.new("ShaderNodeBsdfTransparent")
+    light_path = nodes.new("ShaderNodeLightPath")
+    mix = nodes.new("ShaderNodeMixShader")
+    links.new(light_path.outputs["Is Camera Ray"], mix.inputs["Fac"])
+    links.new(transparent.outputs["BSDF"], mix.inputs[1])
+    links.new(emission.outputs["Emission"], mix.inputs[2])
+    links.new(mix.outputs["Shader"], output.inputs["Surface"])
+
+    plate = bpy.data.objects.new("Grocery_Aisle_Camera_Backplate", mesh)
+    ensure_collection("Stage").objects.link(plate)
+    mesh.materials.append(material)
+    plate.parent = camera
+    plate.matrix_parent_inverse = Matrix.Identity(4)
+    plate.location = (0.0, 0.0, -distance)
+    plate.hide_select = True
+    if hasattr(plate, "visible_shadow"):
+        plate.visible_shadow = False
+    plate["Role"] = "Packed grocery aisle photo plate; follows camera and defocuses behind the product"
+    remember(plate, "BackgroundPlate")
+    return plate
+
+
+def add_cart_contact_shadow(cart_root: bpy.types.Object) -> bpy.types.Object:
+    """Overlay a subtle soft floor shadow so the cart sits naturally on the aisle photo."""
+    width, depth = 1500.0, 900.0
+    mesh = bpy.data.meshes.new("Cart_Contact_Shadow_Mesh")
+    mesh.from_pydata(((-width * 0.5, -depth * 0.5, 0.0),
+                      ( width * 0.5, -depth * 0.5, 0.0),
+                      ( width * 0.5,  depth * 0.5, 0.0),
+                      (-width * 0.5,  depth * 0.5, 0.0)), [], ((0, 1, 2, 3),))
+    mesh.update()
+    uv_layer = mesh.uv_layers.new(name="Shadow_Falloff_UV")
+    for loop_index, uv in zip(mesh.polygons[0].loop_indices,
+                              ((0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0))):
+        uv_layer.data[loop_index].uv = uv
+
+    material = bpy.data.materials.new("Soft contact shadow · camera composite")
+    material.use_nodes = True
+    nodes = material.node_tree.nodes
+    nodes.clear()
+    links = material.node_tree.links
+    output = nodes.new("ShaderNodeOutputMaterial")
+    texcoord = nodes.new("ShaderNodeTexCoord")
+    distance = nodes.new("ShaderNodeVectorMath")
+    distance.operation = "DISTANCE"
+    distance.inputs[1].default_value = (0.5, 0.5, 0.0)
+    links.new(texcoord.outputs["UV"], distance.inputs[0])
+    falloff = nodes.new("ShaderNodeMapRange")
+    falloff.clamp = True
+    falloff.interpolation_type = "SMOOTHERSTEP"
+    falloff.inputs["From Min"].default_value = 0.0
+    falloff.inputs["From Max"].default_value = 0.5
+    falloff.inputs["To Min"].default_value = 0.26
+    falloff.inputs["To Max"].default_value = 0.0
+    links.new(distance.outputs["Value"], falloff.inputs["Value"])
+
+    transparent = nodes.new("ShaderNodeBsdfTransparent")
+    shadow_tint = scale_rgba(LINEAR_PALETTE["BODY"], 0.48)
+    emission = nodes.new("ShaderNodeEmission")
+    emission.inputs["Color"].default_value = shadow_tint
+    emission.inputs["Strength"].default_value = 1.0
+    shadow_mix = nodes.new("ShaderNodeMixShader")
+    links.new(falloff.outputs["Result"], shadow_mix.inputs["Fac"])
+    links.new(transparent.outputs["BSDF"], shadow_mix.inputs[1])
+    links.new(emission.outputs["Emission"], shadow_mix.inputs[2])
+    light_path = nodes.new("ShaderNodeLightPath")
+    camera_mix = nodes.new("ShaderNodeMixShader")
+    links.new(light_path.outputs["Is Camera Ray"], camera_mix.inputs["Fac"])
+    links.new(transparent.outputs["BSDF"], camera_mix.inputs[1])
+    links.new(shadow_mix.outputs["Shader"], camera_mix.inputs[2])
+    links.new(camera_mix.outputs["Shader"], output.inputs["Surface"])
+
+    shadow = bpy.data.objects.new("Cart_Contact_Shadow", mesh)
+    ensure_collection("Cart_Context").objects.link(shadow)
+    mesh.materials.append(material)
+    shadow.parent = cart_root
+    shadow.matrix_parent_inverse = Matrix.Identity(4)
+    shadow.location = (0.0, 0.0, -4.0)
+    shadow.hide_select = True
+    shadow["Role"] = "Subtle camera-only soft shadow over the grocery floor photo"
+    remember(shadow, "CartShadow")
+    return shadow
+
+
 def setup_camera_lights(handle_center_mm) -> dict[str, bpy.types.Object]:
-    """Set a product camera plus a wide view containing cart and human scale."""
+    """Set a product camera with close-up and wide cart-context views."""
     scene = bpy.context.scene
     hx, hy, hz = Vector(handle_center_mm)
-    # Lift the product-camera target so the hero views include the shopper's head and hands.
+    # Lift the product-camera target so the hero views center on the cart-mounted attachment.
     product_focus = (hx, hy, hz + 150.0)
-    backdrop = bevelled_box("Warm_Cream_Cyclorama", (4500.0, 4500.0, 2.0),
-                            (0.0, 0.0, -30.0), MATERIALS["Backdrop"],
-                            "Stage", bevel=0.0)
-    backdrop["Finish"] = "Palette cream plaster with subtle procedural noise"
-
     camera_data = bpy.data.cameras.new("Studio_35mm_Camera_Data")
     camera_data.lens = 35.0
     camera_data.sensor_width = 36.0
     camera_data.clip_start = 1.0
     camera_data.clip_end = 6000.0
     camera_data.dof.use_dof = True
-    camera_data.dof.aperture_fstop = 8.0
+    camera_data.dof.aperture_fstop = 5.6
     camera = bpy.data.objects.new("Studio_35mm_Camera", camera_data)
     ensure_collection("Stage").objects.link(camera)
     target = Vector(product_focus)
@@ -1664,15 +1582,19 @@ def setup_camera_lights(handle_center_mm) -> dict[str, bpy.types.Object]:
 
     warm = LINEAR_PALETTE["BACKDROP"]
     cool = mix_rgba(LINEAR_PALETTE["SAGE"], LINEAR_PALETTE["BACKDROP"], 0.55)
-    # Brighter, broad sources keep palette-derived dark materials readable in the mm-scale scene.
-    add_area_light("Softbox_Key_Warm", (800.0, -1450.0, 2200.0), (-160.0, 0.0, 650.0),
-                   13600.0, 1250.0, warm)
-    add_area_light("Softbox_Fill_Sage", (-1450.0, -250.0, 1450.0), (-420.0, 0.0, 920.0),
-                   7200.0, 1100.0, cool)
-    add_area_light("Softbox_Rim_Warm", (250.0, 1450.0, 1900.0), (-150.0, 0.0, 820.0),
-                   14400.0, 1050.0, warm)
+    # Four large sources create a bright product key, gentle shadow fill, a clean
+    # edge rim, and soft overhead ambience without flattening the dark attachment.
+    add_area_light("Softbox_Key_Warm", (850.0, -1350.0, 2050.0), product_focus,
+                   9000.0, 1250.0, warm)
+    add_area_light("Softbox_Fill_Sage", (-1350.0, -350.0, 1450.0), product_focus,
+                   4200.0, 1450.0, cool)
+    add_area_light("Softbox_Rim_Warm", (250.0, 1450.0, 1900.0), product_focus,
+                   10500.0, 1050.0, warm)
+    add_area_light("Store_Ceiling_Softbox", (hx - 100.0, hy + 150.0, hz + 2350.0),
+                   product_focus, 6000.0, 1900.0, warm)
 
-    # World background stays warm, soft, and palette-matched.
+    # A restrained world fill lifts shadow detail while the real camera backplate
+    # carries the grocery-store context in final renders.
     world = bpy.data.worlds.get("World") or bpy.data.worlds.new("World")
     scene.world = world
     world.use_nodes = True
@@ -1680,12 +1602,13 @@ def setup_camera_lights(handle_center_mm) -> dict[str, bpy.types.Object]:
     nodes.clear()
     output = nodes.new("ShaderNodeOutputWorld")
     background = nodes.new("ShaderNodeBackground")
-    background.inputs["Color"].default_value = LINEAR_PALETTE["BACKDROP"]
-    background.inputs["Strength"].default_value = 1.2
+    background.inputs["Color"].default_value = mix_rgba(LINEAR_PALETTE["BACKDROP"],
+                                                        LINEAR_PALETTE["SAGE"], 0.32)
+    background.inputs["Strength"].default_value = 0.72
     world.node_tree.links.new(background.outputs["Background"], output.inputs["Surface"])
 
-    # Show the complete shopper/cart/attachment proportions early, then move
-    # into measured-handle close-ups for clamp, swivel, and latch detail.
+    # Open on a wide cart-context view, then move into measured-handle close-ups
+    # for clamp, swivel, and latch detail.
     camera_poses = (
         (1,   product_focus, -50.0, 1500.0, 20.0),
         (24,  (-170.0, 0.0, 850.0), -58.0, 3600.0, 17.0),
@@ -1715,7 +1638,9 @@ def setup_camera_lights(handle_center_mm) -> dict[str, bpy.types.Object]:
         key_object(focus, "location", frame)
     tune_action(camera)
     tune_action(focus)
-    return {"camera": camera, "focus": focus, "backdrop": backdrop}
+    background_plate = add_camera_background_plate(camera)
+    return {"camera": camera, "focus": focus,
+            "background_plate": background_plate}
 
 
 # ── Curved motion arrows and camera-facing callout panels ─────────────────────
@@ -1857,8 +1782,8 @@ def animate(rig_objects: dict[str, bpy.types.Object],
     scene.timeline_markers.new("Rest-pad side swivel", frame=TIMING["SWIVEL"][0])
     scene.timeline_markers.new("Hero end", frame=FRAME_END)
 
-    # The cart and scale figure stay fixed as references. The attachment below
-    # the central clamp pivots; controller properties also stage the exploded view.
+    # The cart stays fixed as a reference. The attachment below the central clamp
+    # pivots; controller properties also stage the exploded view.
     property_tracks = {
         "Explode": ((1, 0.0), (24, 0.0), (34, 0.8), (40, 1.0),
                     (52, 0.35), (64, 0.0), (96, 0.0), (312, 0.0)),
@@ -1869,7 +1794,7 @@ def animate(rig_objects: dict[str, bpy.types.Object],
         "Collar_Insertion": ((1, 0.0), (24, 0.0), (40, 1.0), (56, 0.6),
                              (72, 0.0), (96, 0.0), (312, 0.0)),
         "Swivel": ((1, 0.0), (144, 0.0)),
-        "Tilt": ((1, HUMAN_REST_TILT_DEGREES), (192, HUMAN_REST_TILT_DEGREES)),
+        "Tilt": ((1, NEUTRAL_TILT_DEGREES), (192, NEUTRAL_TILT_DEGREES)),
         "Plate_Roll": ((1, 0.0), (312, 0.0)),
     }
     for prop, keys in property_tracks.items():
@@ -1907,8 +1832,8 @@ def animate(rig_objects: dict[str, bpy.types.Object],
         bore.value = value
         bore.keyframe_insert(data_path="value", frame=frame)
 
-    # Keep the cushion at the shopper-matched 12° forward lean. The attachment
-    # sweeps around its central vertical mount, pausing at 15° detents to ±45°.
+    # Keep the cushion at its neutral 12° forward lean. The attachment sweeps
+    # around its central vertical mount, pausing at 15° detents to ±45°.
     swivel_keys = (
         (145, 0.0),
         (148, 15.0), (149, 15.0),
@@ -1927,11 +1852,11 @@ def animate(rig_objects: dict[str, bpy.types.Object],
     for frame, value in swivel_keys:
         key_property(controller, "Swivel", frame, value)
 
-    # The torso-matched 12° rest angle demonstrates a modest forward-pitch range.
+    # The neutral 12° rest angle demonstrates a modest forward-pitch range.
     # The controller keeps its 0–90° mechanical limit for manual adjustment.
-    for frame, value in ((193, HUMAN_REST_TILT_DEGREES), (204, 15.0), (216, 18.0),
-                         (228, 15.0), (240, HUMAN_REST_TILT_DEGREES),
-                         (312, HUMAN_REST_TILT_DEGREES)):
+    for frame, value in ((193, NEUTRAL_TILT_DEGREES), (204, 15.0), (216, 18.0),
+                         (228, 15.0), (240, NEUTRAL_TILT_DEGREES),
+                         (312, NEUTRAL_TILT_DEGREES)):
         key_property(controller, "Tilt", frame, value)
     for frame in (193, 240, 312):
         key_property(controller, "Plate_Roll", frame, 0.0)
@@ -2097,7 +2022,7 @@ def clear_scene() -> None:
 
 
 def organize_collections() -> None:
-    for name in ("Cart_Context", "Human_Context", "PartA_Clamp", "PartB_Axle", "Pad_Body", "Pad_BasePlate",
+    for name in ("Cart_Context", "PartA_Clamp", "PartB_Axle", "Pad_Body", "Pad_BasePlate",
                  "Latch_Assembly", "Handlebar", "Rig", "Arrows_Labels", "Stage"):
         ensure_collection(name)
 
@@ -2112,8 +2037,7 @@ def main() -> None:
     organize_collections()
     make_materials()
     cart_context = make_cart_context()
-    human_context = make_human_scale_figure(
-        cart_context["root"], cart_context["handle"]["center"])
+    add_cart_contact_shadow(cart_context["root"])
 
     clamp_parts = make_clamp()
     handlebar = make_handlebar()
@@ -2161,9 +2085,10 @@ def main() -> None:
     scene["Cart context source"] = "Copied Shopping Cart mesh from blender/source/hcd mockup.blend; original untouched"
     scene["Cart motion"] = "Stationary context; no cart-root animation; attachment rig moves independently"
     scene["Rest-pad orientation"] = (
-        "Neutral 12° forward-leaning cushion aligned to the shopper's torso; ±45° swivel; "
+        "Neutral 12° forward-leaning cushion; ±45° swivel; "
         "12–18° pitch demonstration returns to 12°")
-    scene["Human scale comparison"] = "Stylized 1700 mm adult leaning into the cushion; visual-only, not ergonomic validation"
+    scene["Scene context"] = (
+        "Shopper figure omitted; product shown on the fixed cart in a grocery-aisle setting")
     scene["Startup frame"] = STARTUP_FRAME
     scene["Palette"] = "F2EFE9 cream · 3A4C40 forest · 8BA892 sage · C4694A terracotta"
     scene["Export note"] = "No animation render is started unless RENDER=True"
@@ -2172,7 +2097,7 @@ def main() -> None:
     OUTPUT_BLEND.parent.mkdir(parents=True, exist_ok=True)
     bpy.ops.wm.save_as_mainfile(filepath=str(OUTPUT_BLEND))
     print(f"Saved animated Blender model: {OUTPUT_BLEND}")
-    print(f"Ready at frame {STARTUP_FRAME} (full scale view). Press Spacebar to play; Render > Render Animation to export H.264.")
+    print(f"Ready at frame {STARTUP_FRAME} (product hero view). Press Spacebar to play; Render > Render Animation to export H.264.")
     print(f"Camera: 35 mm, {scene.render.resolution_x} × {scene.render.resolution_y}; "
           f"Cycles {scene.cycles.samples} samples; denoising enabled; render flag={RENDER}")
     if RENDER:
