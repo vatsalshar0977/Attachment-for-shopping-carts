@@ -1,0 +1,14 @@
+# Blender autosave/backup files
+*.blend1
+*.blend2
+
+# Local preview renders (kept out of the design source diff)
+blender/swivel_rest_pad/previews/
+
+# Python cache files
+__pycache__/
+*.py[cod]
+
+# TYTO disposable previews and intermediate animation frames
+blender/tyto_microphone/renders/_*.png
+blender/tyto_microphone/renders/animation_frames/
