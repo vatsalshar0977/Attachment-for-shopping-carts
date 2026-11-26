@@ -8,3 +8,7 @@ blender/swivel_rest_pad/previews/
 # Python cache files
 __pycache__/
 *.py[cod]
+
+# TYTO disposable previews and intermediate animation frames
+blender/tyto_microphone/renders/_*.png
+blender/tyto_microphone/renders/animation_frames/

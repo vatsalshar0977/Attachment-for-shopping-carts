@@ -1,20 +1,31 @@
 # TYTO compact microphone
 
-Project folder for the TYTO microphone concept for a camera hot-shoe or phone rig.
+Reference-guided Blender concept for a compact microphone for a camera hot-shoe or phone rig. The shell proportions, tilted top port, coiled navy inlay, bronze shell, and amber light trace are based on the supplied bronze product render. Product imagery in this folder is rendered by Blender (Cycles), not AI-generated.
 
-## Status
+## Deliverables
 
-**Scaffold only — this is not the completed design.** The supplied bronze reference render and shell sketches are not present in the current checkout, and the earlier local Blender outputs are unavailable here. No `.blend`, product stills, or animation are included yet. The mismatched preview is intentionally not being added as a finished result.
+- `source/tyto_microphone.blend` — editable Blender scene, with the procedural shell, recessed port/grille, materials, lights, cameras, and six-second animation controls.
+- `build_tyto.py` — reproducible scene builder and render/animation script.
+- `renders/tyto_hero.png` — three-quarter studio hero.
+- `renders/tyto_front_shell.png` — front shell and spiral detail.
+- `renders/tyto_top_spiral.png` — elevated spiral-shell view.
+- `renders/tyto_side_profile.png` — side profile.
+- `renders/tyto_knurl_macro.png` — microphone port, woven grille, and diamond-knurled collar detail.
+- `animation/tyto_orbit_6s.mp4` — six-second, 24 fps camera orbit with an amber LED reveal.
+- `references/tyto_bronze_render_reference.png` — supplied visual reference.
 
-To complete the project faithfully, restore the reference render and sketches, then add the editable Blender scene, Blender-rendered stills, and animation to the folders below.
+## Rebuild
 
-## Design brief
+With Blender 4.5+ and an FFmpeg executable available (or `imageio-ffmpeg` installed):
 
-Match the supplied references: a smooth rounded nautilus shell, raised spiral eye, short cylindrical mouth, diamond-knurled bronze ring, recessed woven black grille, subtle continuous amber spiral LED, and lower seam. Keep a satin dark-bronze finish and premium studio presentation. No text, logos, extra buttons, cables, or hands. The amber LED should remain a soft accent.
+```sh
+blender -b --python build_tyto.py -- --stills --animation
+```
 
-## Folder layout
+The script saves the `.blend`, renders five Cycles stills, renders 144 animation frames, and encodes the MP4. Intermediate animation frames are written under `renders/animation_frames/` and excluded from Git.
 
-- `references/` — source render and shell sketches.
-- `source/` — editable `.blend` and reproducible build script.
-- `renders/` — final Blender-rendered product stills.
-- `animation/` — final orbit/LED animation.
+For background Python using the `bpy` wheel, install `bpy` and `imageio-ffmpeg`, then run `python3 build_tyto.py --stills --animation` from this directory.
+
+## Design notes
+
+The model is a visual product concept—not a production-ready microphone or acoustically validated design. It intentionally has no logo, text, extra buttons, cable, or hands; the amber LED is the only color accent.
